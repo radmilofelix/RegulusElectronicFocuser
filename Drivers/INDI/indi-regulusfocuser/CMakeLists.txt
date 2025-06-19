@@ -1,7 +1,11 @@
-cmake_minimum_required(VERSION 2.4.7)
-PROJECT(indi-regulusfocuser CXX C)
+cmake_minimum_required(VERSION 3.28) #Ubuntu 24 CMake version
+PROJECT(indi_regulusfocuser CXX C)
+
+# C++17 needed
+set(CMAKE_CXX_STANDARD 17)
 
 LIST(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules/")
+#LIST(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake_modules/")
 
 include(GNUInstallDirs)
 
@@ -9,10 +13,9 @@ set (VERSION_MAJOR 0)
 set (VERSION_MINOR 1)
 
 find_package(INDI REQUIRED)
-find_package(MODBUS REQUIRED)
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/config.h.cmake ${CMAKE_CURRENT_BINARY_DIR}/config.h)
-configure_file(${CMAKE_CURRENT_SOURCE_DIR}/indi_regulusfocuser.xml.cmake ${CMAKE_CURRENT_BINARY_DIR}/indi_regulusfocuser.xml)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/${PROJECT_NAME}.xml.cmake ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.xml)
 
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
@@ -20,20 +23,17 @@ include_directories(${INDI_INCLUDE_DIR})
 
 include(CMakeCommon)
 
-#set(GPIO_LIBRARIES "libgpiod.so")
-
-################ ROR System ################
-set(indi_regulusfocuser_SRCS
-        ${CMAKE_CURRENT_SOURCE_DIR}/regulusfocuser.cpp
+set(${PROJECT_NAME}_SRCS
+        ${CMAKE_CURRENT_SOURCE_DIR}/${PROJECT_NAME}.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/modbusMaster.cpp
    )
 
 IF (UNITY_BUILD)
-    ENABLE_UNITY_BUILD(indi_regulusfocuser indi_regulusfocuser_SRCS 6 cpp)
+    ENABLE_UNITY_BUILD(${PROJECT_NAME} ${PROJECT_NAME}_SRCS 6 cpp)
 ENDIF ()
 
-add_executable(indi_regulusfocuser ${indi_regulusfocuser_SRCS})
-target_link_libraries(indi_regulusfocuser ${INDI_LIBRARIES} modbus)
-install(TARGETS indi_regulusfocuser RUNTIME DESTINATION bin )
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/indi_regulusfocuser.xml DESTINATION ${INDI_DATA_DIR})
+add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SRCS})
+target_link_libraries(${PROJECT_NAME} ${INDI_LIBRARIES} modbus)
+install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin )
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.xml DESTINATION ${INDI_DATA_DIR})
 

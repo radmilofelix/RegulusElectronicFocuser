@@ -1,7 +1,7 @@
 #ifndef FOCUSERDEFINITIONS___H
 #define FOCUSERDEFINITIONS___H
 
-// #define DEBUG
+//#define DEBUG
 
 #define PROGRAMVERSION 1.0
 
@@ -42,6 +42,5 @@
 #define CMDREMOTEENABLE	212
 #define CMDREMOTEDISABLE 213
 //////////////////////////////////////////////////////////////////////
-
 
 #endif

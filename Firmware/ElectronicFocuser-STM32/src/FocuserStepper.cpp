@@ -14,15 +14,16 @@ FocuserStepper::FocuserStepper()
 	ms1 = 0;
 	ms2 = 0;
 	ms3 = 0;
-
-  maxStepsAbsolute = FOCUSERTRAVEL * 360 * MAXMICROSTEPPING / MOTORRESOLUTION / FOCUSERTRAVELPER360 * GEARRATIO;
-  maxStepsAbsolute -= maxStepsAbsolute/20; // decrease value by 5%
-  maxSteps = maxStepsAbsolute;
-  stepTarget = 0;
-  stepRate = 10000;
+    gearedType = GEAREDTYPE;
+    backlash = 0;
+    maxStepsAbsolute = FOCUSERTRAVEL * 360 * MAXMICROSTEPPING / MOTORRESOLUTION / FOCUSERTRAVELPER360 * GEARRATIO;
+    maxStepsAbsolute -= maxStepsAbsolute*SAFETYMAXLIMDECREASEPERCENT/100; // decrease value
+    maxSteps = maxStepsAbsolute;
+    stepTarget = 0;
+    stepRate = 10000;
     motorEnable = false;
-  speedIndex = 14;
-  optimalSpeed = 13 - MOTORRESOLUTION / 0.9;
+    speedIndex = 14;
+    optimalSpeed = 13 - MOTORRESOLUTION / 0.9;
 	//motorDriver = DRIVER_A4988;
 	//motorDriver = DRIVER_DRV8825;
 	motorDriver = DRIVERSTSPIN820;
@@ -48,8 +49,6 @@ FocuserStepper::FocuserStepper()
     ValidateMicrostepMode();
   }
 }
-
-
 
 FocuserStepper::~FocuserStepper()
 {
@@ -361,13 +360,9 @@ void FocuserStepper::SelectMicrostepMode(int microstep)
     digitalWrite(M3, ms3);
     break;
   }
-
   maxStepsAbsolute = FOCUSERTRAVEL * 360 * microstep / MOTORRESOLUTION / FOCUSERTRAVELPER360 * GEARRATIO;
-  maxStepsAbsolute -= maxStepsAbsolute/20; // decrease value by 5%
+  maxStepsAbsolute -= maxStepsAbsolute*SAFETYMAXLIMDECREASEPERCENT/100; // decrease value
   maxSteps = maxStepsAbsolute;
-
-
-
 }
 
 void FocuserStepper::ValidateMicrostepMode()

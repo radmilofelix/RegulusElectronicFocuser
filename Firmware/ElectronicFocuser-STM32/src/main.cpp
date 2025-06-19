@@ -15,7 +15,7 @@ void setup()
     pinMode(DIR, OUTPUT);
     pinMode(STEP, OUTPUT);
     pinMode(BUZZERPIN, OUTPUT);
-    pinMode(LIMITSWITCHPIN, INPUT_PULLUP);
+    pinMode(LIMITSWITCHPIN, INPUT_PULLUP); // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 
 #ifdef LIMITSWITCHNORMALLYCLOSED
     attachInterrupt(digitalPinToInterrupt(LIMITSWITCHPIN), LimitSwitchInterrupt, RISING);
@@ -25,8 +25,15 @@ void setup()
     digitalWrite(BUZZERPIN, 0);
 
     delay (100);
+//    modbus_f.begin(115200);
+//    modbus_f.begin(57600);
+//    modbus_f.begin(38400);
     modbus_f.begin(19200);
-    Serial2.begin(19200);
+//    Serial2.begin(115200);
+//    Serial2.begin(57600);
+//    Serial2.begin(38400);
+    Serial2.begin(115200);
+
     for(int i = 0; i < 200; i++)
     {
         Serial2.println();
@@ -64,7 +71,7 @@ void setup()
     lostSteps = 0;
 
 // Reset flash for debug purposes
-    SetFlashVar(0);
+//    SetFlashVar(0);
 
     GetFlashVar();
     if(focuserFault)
@@ -104,43 +111,54 @@ void LimitSwitchInterrupt()
         return;
     }
 #ifdef LIMITSWITCHNORMALLYCLOSED
-    if(digitalRead(LIMITSWITCHPIN))
+    if(digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 #else
-    if(!digitalRead(LIMITSWITCHPIN))
+    if(!digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 #endif
-    {
+    { // limit switch active
         if( (millis() - previousPress) > contactDebounce )
         {
-            lostSteps = fstepper.stepPosition;
-#ifdef DEBUG
-            Serial2.print("zerolimitPosition: ");
-            Serial2.println(lostSteps);
-#endif
-            fstepper.stepPosition = 0;
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate);
-            fstepper.stepTarget = 0;
-            previousPress = millis();
-            interruptTriggered = true;
-#ifdef DEBUG
-            Serial2.println("Limit Switch!!!");
-#endif
+            if(notInit) // focuser is not initialised
+            {
+                lostSteps = fstepper.stepPosition;
+    #ifdef DEBUG
+                Serial2.print("zerolimitPosition: ");
+                Serial2.println(lostSteps);
+    #endif
+                fstepper.stepPosition = 0;
+                encoder->setPosition(fstepper.stepPosition / fstepper.stepRate);
+                fstepper.stepTarget = 0;
+                previousPress = millis();
+                interruptTriggered = true;
+    #ifdef DEBUG
+                Serial2.println("Limit Switch!!!");
+    #endif
+            }
+            else // focuser is initialised and zero position reached
+            {
+                fstepper.stepPosition = 0;
+                encoder->setPosition(fstepper.stepPosition / fstepper.stepRate);
+                fstepper.stepTarget = 0;
+                fstepper.EnableMotor(false);
+            }
+            #ifdef DEBUG
+            Serial2.println("Limit Switch Debounced!!!");
+            #endif
         }
-    }
-    else
-    {
-        if( !notInit )
+        else // contact not debounced
         {
-            fstepper.stepPosition = 0;
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate);
-            fstepper.stepTarget = 0;
-            fstepper.EnableMotor(false);
+            #ifdef DEBUG
+            Serial2.println("Limit Switch Not Debounced!!!");
+            #endif
         }
     }
-#ifdef DEBUG
-    Serial2.println("Limit Switch Debounced!!!");
-#endif
+    else // contacts vibrate
+    {
+        #ifdef DEBUG
+        Serial2.println("Limit Switch contacts vibrate!!!");
+        #endif
+    }
 }
-
 
 #ifdef DEBUG
 void DisplayMenu()
@@ -164,6 +182,7 @@ void DisplayMenu()
     Serial2.println(F(" j = go to middle"));
     Serial2.println(F(" n = go to max"));
     Serial2.println(F(" x = sync to zero"));
+    Serial2.println(F(" k = soft reset"));
     Serial2.println(F(" v = display motion values"));
     Serial2.println(F(" q = display focuser data"));
     Serial2.println(F(" z = display this menu"));
@@ -171,7 +190,6 @@ void DisplayMenu()
     Serial2.println();
     //
 }
-
 
 void DisplayFocuserData()
 {
@@ -364,6 +382,11 @@ void KeyboardOperationSelect()
                 Serial2.println(F(" Sync to zero"));
                 SyncToZero();
                 break;
+            case 'k': // Soft reset
+                Serial2.println(F(" Soft reset"));
+                focuserFault=1;
+                FocuserInit();
+                break;
             case 'c':
                 //           fstepper.enableMotion=true;
                 //           Serial2.println("Motion Enabled");
@@ -482,6 +505,8 @@ void MultiClick()
             break;
 
         case 7: // soft reset
+            GetFlashVar();
+            notInit = true;
             FocuserInit();
             break;
 
@@ -495,6 +520,17 @@ void MultiClick()
             delay(1000);
             SignalBeeps(3, 1500);
             delay(1000);
+            break;
+
+            case 9: // display slip error or backlash
+            if( !fstepper.gearedType )
+            {
+                DisplayMessageSlipError();
+            }
+            else
+            {
+                DisplayMessageBacklash();
+            }
             break;
     }
 } // MultiClick
@@ -546,14 +582,14 @@ void FocuserInit()
     lostSteps = 0;
     fstepper.SetMotorDirection(-1); // retract
 #ifdef LIMITSWITCHNORMALLYCLOSED
-    if(!digitalRead(LIMITSWITCHPIN))
+    if(!digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 #else // Switch normally open
-    if(digitalRead(LIMITSWITCHPIN))
+    if(digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 #endif
         // Stage 1. - Finding zero position
-    {
+    { // limit switch inactive
         Serial2.println("INIT: 1. Focuser at unknown position...");
-        fstepper.maxSteps = fstepper.maxStepsAbsolute + fstepper.maxStepsAbsolute / 10;
+        fstepper.maxSteps = fstepper.maxStepsAbsolute + fstepper.maxStepsAbsolute * SAFETYMAXLIMDECREASEPERCENT / 100 / 2;
         fstepper.stepPosition = fstepper.maxSteps;
         fstepper.SetFocuserSpeed(fstepper.optimalSpeed);
         MotorInit();
@@ -588,11 +624,11 @@ void FocuserInit()
     }
 
 #ifdef LIMITSWITCHNORMALLYCLOSED
-    if(!digitalRead(LIMITSWITCHPIN))
+    if(!digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 #else // Switch normally open
-    if(digitalRead(LIMITSWITCHPIN))
+    if(digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 #endif
-    {
+    { // limit switch inactive
         DisplayMessageInitCanNotReachZero();
         remoteControlEnabled = false;
         notInit = false;
@@ -608,14 +644,15 @@ void FocuserInit()
     MotorInit();
     fstepper.SetFocuserSpeed(fstepper.optimalSpeed);
 
+ // go to maxSteps/10 and check if limit switch is released
     fstepper.stepTarget = fstepper.maxSteps / 10;
     fstepper.PulseStepToTarget();
 #ifdef LIMITSWITCHNORMALLYCLOSED
-    if(digitalRead(LIMITSWITCHPIN))
+    if(digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 #else // Switch normally open
-    if(!digitalRead(LIMITSWITCHPIN))
+    if(!digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 #endif
-    {
+    { // limit switch active
         DisplayMessageInitCanNotReachMax();
         remoteControlEnabled = false;
         notInit = false;
@@ -648,15 +685,26 @@ void FocuserInit()
     delay(1000);
 
 #ifdef LIMITSWITCHNORMALLYCLOSED
-    if(digitalRead(LIMITSWITCHPIN))
+    if(digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 #else // Switch normally open
-    if(!digitalRead(LIMITSWITCHPIN))
+    if(!digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 #endif
-    {
+    { // limit switch active
         DisplayMessageInitCanNotReachMax();
         remoteControlEnabled = false;
         notInit = false;
         focuserFault = 1;
+        SetFlashVar(1);
+        SignalBeeps(5, 1500);
+        delay(1000);
+        SignalBeeps(5, 1500);
+        delay(1000);
+        SignalBeeps(5, 1500);
+        delay(1000);
+        SignalBeeps(5, 1500);
+        delay(1000);
+        SignalBeeps(5, 1500);
+        delay(1000);
         return;
     }
 
@@ -679,11 +727,11 @@ void FocuserInit()
     SignalBeeps(2, 1500);
 
 #ifdef LIMITSWITCHNORMALLYCLOSED
-    if(digitalRead(LIMITSWITCHPIN))
+    if(digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 #else // Switch normally open
-    if(!digitalRead(LIMITSWITCHPIN))
+    if(!digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 #endif
-    {
+    { // limit switch active
         DisplayMessageInitEarlyZero();
         remoteControlEnabled = false;
         notInit = false;
@@ -714,40 +762,60 @@ void FocuserInit()
 
     MotorInit();
     fstepper.SetFocuserSpeed(fstepper.optimalSpeed - 1);
-    if( abs(((double)fstepper.maxSteps - fstepper.maxStepsAbsolute)) > fstepper.maxStepsAbsolute / 10 )
+    slipError = abs(((double)fstepper.maxSteps - fstepper.maxStepsAbsolute));
+    if( !fstepper.gearedType )
     {
-        DisplayMessageInitErrorSlipping();
-        remoteControlEnabled = false;
-        SignalBeeps(5, 1500);
-        delay(1000);
-        SignalBeeps(5, 1500);
-        delay(1000);
-        SignalBeeps(5, 1500);
-        delay(1000);
+        DisplayMessageInitStageFinalSlipError();
+        if( slipError > fstepper.maxStepsAbsolute / 10 ) // admissible error due to slipping: 10%
+        {
+            notInit = false;
+            focuserFault = 1;
+            DisplayMessageInitErrorSlipping();
+            remoteControlEnabled = false;
+            SignalBeeps(5, 1500);
+            delay(1000);
+            SignalBeeps(5, 1500);
+            delay(1000);
+            SignalBeeps(5, 1500);
+            delay(1000);
+            return;
+        }
     }
-    else
+    else // geared type focuser
     {
+        slipError /= 2;
+        fstepper.backlash = slipError;
+        DisplayMessageInitStageFinalBacklash();
+        if( slipError > MAXGEAREDBACKLASH )
+        {
+            notInit = false;
+            focuserFault = 1;
+            return;
+        }
+    }
         focuserFault = 0;
         // Go to middle
+        fstepper.stepTarget = fstepper.maxSteps / 2;
         fstepper.SetFocuserSpeed(fstepper.optimalSpeed);
+        fstepper.PulseStepToTarget();
         encoder->setPosition(fstepper.maxSteps / 2 / fstepper.stepRate);
+        Signal2Beep2();
         Serial2.println("Focuser to middle");
         DisplayRefresh();
 #ifdef DEBUG
         DisplayMenu();
 #endif
-    }
     notInit = false;
-} // FocuserInit()
+} // FocuserInit() //////////////////////////////////////////////////////////////////////////////////
 
 void SyncToZero()
 {
     DisplayMessageZeroSync();
     //  long initialPosition = fstepper.stepPosition;
 #ifdef LIMITSWITCHNORMALLYCLOSED
-    if(!digitalRead(LIMITSWITCHPIN))
+    if(!digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 #else // Switch normally open
-    if(digitalRead(LIMITSWITCHPIN))
+    if(digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 #endif
         // Finding zero position
     {
@@ -790,7 +858,8 @@ void DisplayRefresh()
     display.display();
 }
 
-void DisplayMessageInitStartMessage()
+
+void DisplayMessageRegulusFocuser()
 {
     display.clearDisplay();
     display.setTextSize(2);
@@ -798,21 +867,28 @@ void DisplayMessageInitStartMessage()
     display.setCursor(0, 0);
     display.println("  Regulus");
     display.println("  Focuser");
+}
+
+
+void DisplayMessageInitStartMessage()
+{
+    DisplayMessageRegulusFocuser();
     display.println("");
     display.println("INIT...");
     display.display();
 }
 
+void DisplayMessageRegulusFocuserInit()
+{
+    DisplayMessageRegulusFocuser();
+    display.println("INIT...");
+}
+
 void DisplayMessageInitStage1()
 {
-    display.clearDisplay();
-    display.setTextSize(2);
-    display.setTextColor(WHITE);
-    display.setCursor(0, 0);
-    display.println("  Regulus");
-    display.println("  Focuser");
-    display.println("INIT...");
+    DisplayMessageRegulusFocuserInit();
     display.setTextSize(1);
+    display.print("MaxStepsAbs: ");
     display.println(fstepper.maxStepsAbsolute);
     display.println("Stage 1: Finding zero");
     display.display();
@@ -837,15 +913,10 @@ void DisplayMessageInitCanNotReachZero()
 
 void DisplayMessageInitStage2()
 {
-    display.clearDisplay();
-    display.setTextSize(2);
-    display.setTextColor(WHITE);
-    display.setCursor(0, 0);
-    display.println("  Regulus");
-    display.println("  Focuser");
-    display.println("INIT...");
+    DisplayMessageRegulusFocuserInit();
     display.setTextSize(1);
-    display.println("");
+    display.print("maxSteps: ");
+    display.println(fstepper.maxSteps);
     display.println("Stage 2: GoTo max");
     display.display();
 }
@@ -869,15 +940,10 @@ void DisplayMessageInitCanNotReachMax()
 
 void DisplayMessageInitStage3()
 {
-    display.clearDisplay();
-    display.setTextSize(2);
-    display.setTextColor(WHITE);
-    display.setCursor(0, 0);
-    display.println("  Regulus");
-    display.println("  Focuser");
-    display.println("INIT...");
+    DisplayMessageRegulusFocuserInit();
     display.setTextSize(1);
-    display.println("");
+    display.print("maxSteps: ");
+    display.println(fstepper.maxSteps);
     display.println("Stage 3: GoTo zero");
     display.display();
 }
@@ -910,7 +976,7 @@ void DisplayMessageFocuserFault()
     display.println("  FAULT!");
     display.setTextSize(1);
     display.println("");
-    display.println("Flash mem. value.");
+    display.println("Clear flash mem. err.");
     display.display();
 }
 
@@ -931,18 +997,55 @@ void DisplayMessageClearFocuserFault()
 
 void DisplayMessageInitStage4()
 {
-    display.clearDisplay();
-    display.setTextSize(2);
-    display.setTextColor(WHITE);
-    display.setCursor(0, 0);
-    display.println("  Regulus");
-    display.println("  Focuser");
-    display.println("INIT...");
+    DisplayMessageRegulusFocuserInit();
     display.setTextSize(1);
-    display.println("");
+    display.print("maxSteps: ");
+    display.println(fstepper.maxSteps);
     display.println("Stage 4: Slow to zero");
     display.display();
 }
+
+void DisplayMessageInitStageFinalSlipError()
+{
+    DisplayMessageRegulusFocuserInit();
+    display.setTextSize(1);
+    display.print("Slip Error: ");
+    display.println(slipError);
+    display.println("End, go to middle");
+    display.display();
+}
+
+void DisplayMessageInitStageFinalBacklash()
+{
+    DisplayMessageRegulusFocuserInit();
+    display.setTextSize(1);
+    display.print("Backlash: ");
+    display.println(slipError);
+    display.println("End, go to middle");
+    display.display();
+}
+
+
+void DisplayMessageSlipError()
+{
+    DisplayMessageRegulusFocuser();
+    display.setTextSize(1);
+    display.println("");
+    display.print("Slip Error: ");
+    display.println(slipError);
+    display.display();
+}
+
+void DisplayMessageBacklash()
+{
+    DisplayMessageRegulusFocuser();
+    display.setTextSize(1);
+    display.println("");
+    display.print("Backlash: ");
+    display.println(slipError);
+    display.display();
+}
+
 
 void DisplayMessageInitErrorSlipping()
 {
@@ -971,6 +1074,7 @@ void DisplayMessageZeroSync()
     display.println("  Focuser");
     display.println("Zero Sync");
     display.setTextSize(1);
+    display.print("MaxStepsAbs: ");
     display.println(fstepper.maxStepsAbsolute);
     display.println("Finding zero...");
     display.display();
@@ -1238,13 +1342,15 @@ void CommandProcessor()
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // init fails if called from here. Check the values of the FocuserStepper class members set by the constructor
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-            focuserFault = 1;
+//  
+//     set notInit = true before calling FocuserInit
+//
+            GetFlashVar();
+            notInit = true;
             FocuserInit();
             break;
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
         case CMDSETSPEED:
 #ifdef DEBUG
             Serial2.println("Set speed");

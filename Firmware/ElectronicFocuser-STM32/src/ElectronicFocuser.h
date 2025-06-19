@@ -46,25 +46,32 @@ void SignalBeep1();
 void SignalBeep2();
 void SignalBeep3();
 
+void DisplayRefresh();
+void DisplayMessageRegulusFocuser();
 void DisplayMessageInitStartMessage();
+void DisplayMessageRegulusFocuserInit();
 void DisplayMessageInitStage1();
 void DisplayMessageInitCanNotReachZero();
 void DisplayMessageInitStage2();
 void DisplayMessageInitCanNotReachMax();
 void DisplayMessageInitStage3();
+void DisplayMessageInitEarlyZero();
 void DisplayMessageFocuserFault();
 void DisplayMessageClearFocuserFault();
-void DisplayMessageInitEarlyZero();
 void DisplayMessageInitStage4();
+void DisplayMessageInitStageFinalSlipError();
+void DisplayMessageInitStageFinalBacklash();
+void DisplayMessageSlipError();
+void DisplayMessageBacklash();
 void DisplayMessageInitErrorSlipping();
 void DisplayMessageZeroSync();
+
 void DisplayFocuserData();
-void DisplayRefresh();
 
 void ModbusPoll();
 void CommandProcessor();
 
-///////////////////////////////////////////////// Encoder callbacks ////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////// Encoder callbacks /////////////////////////////////////////////////////////////
 void CheckTicks();
 void SingleClick();
 void DoubleClick();
@@ -87,9 +94,9 @@ int working=0;
 unsigned int previousPress = 0;
 int contactDebounce = 400;
 int variableTextSize = 2;
+int slipError;
 
 RotaryEncoder *encoder = nullptr;
 OneButton button(ENCODER_SW, true);
 ModbusSlave modbus_f(1,Serial1,PA7);
 FocuserStepper fstepper;
-

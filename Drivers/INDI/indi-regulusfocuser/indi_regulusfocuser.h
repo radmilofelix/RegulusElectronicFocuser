@@ -37,9 +37,9 @@
 #define TIMERHIT_VALUE 1000 // milliseconds
 #define MODBUSDELAY	20000 // milliseconds
 
-#define HASGEARBOX
+//#define HASGEARBOX
 #ifdef HASGEARBOX
-#define GEARBOXMULTIPLIER 10
+#define GEARBOXDEMULTIPLIER 100
 #endif
 
 class RegulusFocuser : public INDI::Focuser

@@ -24,7 +24,8 @@
 #define DRIVERSTSPIN820 4
 #define LIMITSWITCHPIN PB12
 #define LIMITSWITCHNORMALLYCLOSED
-
+#define SAFETYMAXLIMDECREASEPERCENT 5
+#define MAXGEAREDBACKLASH 100000
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////  Enable one of the focuser models
@@ -36,11 +37,12 @@
 #ifdef SCT_MCT
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////// Crayford 2 " Focuser for SCT & MCT - parameters
- #define FOCUSERTRAVEL 17.5 // mm
+ #define FOCUSERTRAVEL 17 // mm
  #define FOCUSERTRAVELPER360 13 // mm
  #define GEARRATIO 1 // Direct drive
  #define MOTORRESOLUTION 1.8 // degrees per step
  #define MAXMICROSTEPPING 256
+ #define GEAREDTYPE false
 // UnscrewToRetract
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #endif
@@ -52,6 +54,7 @@
  #define GEARRATIO 1 // Direct drive
  #define MOTORRESOLUTION 1.8 // degrees per step
  #define MAXMICROSTEPPING 256
+ #define GEAREDTYPE false
 // UnscrewToRetract
 #endif
 
@@ -61,10 +64,11 @@
  #define FOCUSERTRAVEL  23 // mm
  //#define FOCUSERTRAVEL  23 // mm
  #define FOCUSERTRAVELPER360 23 // mm
- #define GEARRATIO 100 // Direct drive
+ #define GEARRATIO 100 // 
  #define MOTORRESOLUTION 1.8 // degrees per step
  #define MAXMICROSTEPPING 256
-// UnscrewToRetract
+ #define GEAREDTYPE true
+ // UnscrewToRetract
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #endif
 
@@ -101,25 +105,13 @@ class FocuserStepper
 
 	int speedIndex; // index for focuser speeds
 	int optimalSpeed; // optimal maximal speed to be used
-//	int microsteppingIndex; // index for microstepping value 
 	long stepPosition; // focuser position in steps
-//	long lostSteps; // step difference when focuse is at 0 position
 	long stepTarget; // target position for focuser
 	long stepRate; // number of step per encoder tick
-//	int stepsPerRevolution; 
-//	float maxTravel; // um
-//	float travelPerRevolution; //mm
+    bool gearedType;
+    int backlash;
 	unsigned long maxSteps; // maximal number of steps in use
-//	int maxStepping; // ????
 	unsigned long maxStepsAbsolute; // maximum steps calculated from FOCUSERTRAVEL, FOCUSERTRAVELPER360, MOTORRESOLUTION, MAXMICROSTEPPING and GEARRATIO values
-	
 };
-
-
-
-
-
-
-
 
 #endif
