@@ -6,6 +6,8 @@
 #include "FocuserStepper.h"
 #include "FocuserDefinitions.h"
 
+//#define DEBUG
+
 #define ENCODER_CLK PA6
 #define ENCODER_DT PA5
 #define ENCODER_SW  PA4
@@ -25,26 +27,40 @@ HardwareSerial Serial2(USART2);   // PA3  (RX)  PA2  (TX)
 void setup();
 void loop();
 void LimitSwitchInterrupt();
+void BacklashInterrupt();
 void MotorInit();
-void FocuserInit();
+void FocuserInit(int initMode);
 void SyncToZero();
-void GetFlashVar();
-void SetFlashVar(byte flashValue);
+uint32_t Get32FromFlash();
+void Set32ToFlash();
+void GetFlashFault();
+void SetFlashFault(byte faultValue);
+void GetFlashPosition();
+void SetFlashPosition(uint32_t positionValue);
+void GetFlashBacklash();
+void SetFlashBacklash(uint32_t backlashValue);
+void FindZero();
+void WaitForBacklashSwitchClick();
+void BacklashTravel(int travelspeed, uint32_t travelTarget);
+void BacklashDetect(int travelspeed, uint32_t travelTarget);
+
 
 #ifdef DEBUG
 void DisplayMenu();
 void DisplayFocuserData();
-unsigned long ReadNumber();
+unsigned uint32_t ReadNumber();
 void DisplayValues();
 void KeyboardOperationSelect();
 #endif
 
-void SignalBeeps( int nbeeps, int beepFreq);
+
+///////////////////////////////////////////////////////// Messages & Beeps /////////////////////////////////////////////////////
 void Signal2Beep1();
 void Signal2Beep2();
 void SignalBeep1();
 void SignalBeep2();
 void SignalBeep3();
+void SignalBeeps(int nbeeps, int beepFreq);
 
 void DisplayRefresh();
 void DisplayMessageRegulusFocuser();
@@ -62,14 +78,18 @@ void DisplayMessageInitStage4();
 void DisplayMessageInitStageFinalSlipError();
 void DisplayMessageInitStageFinalBacklash();
 void DisplayMessageSlipError();
-void DisplayMessageBacklash();
 void DisplayMessageInitErrorSlipping();
 void DisplayMessageZeroSync();
-
 void DisplayFocuserData();
-
-void ModbusPoll();
-void CommandProcessor();
+void DisplayMessageBacklash(uint32_t backlash);
+void DisplayMessageBacklashAid1();
+void DisplayMessageBacklashAid2();
+void DisplayMessageBacklashWaitForInput();
+void DisplayMessageBacklashReversing();
+void DisplayMessageBacklashDetectionFinished();
+void DisplayMessageBacklashDetected(uint32_t value);
+void DisplayMessageBacklashMeasurements(uint32_t value1, uint32_t value2, uint32_t value3, uint32_t value4);
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 ///////////////////////////////////////////////// Encoder callbacks /////////////////////////////////////////////////////////////
 void CheckTicks();
@@ -81,20 +101,30 @@ void PressStop();
 static int pos = 0;
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void ModbusPoll();
+void CommandProcessor();
+void BacklashAid();
+
 bool notInit = true;
 bool interruptTriggered = false;
+//bool remoteControlEnabled = false;
 bool remoteControlEnabled = true;
-byte focuserFault = 0;
-unsigned long PressStartTime, cycleTime;
+bool backlashInterruptEnable=false;
 bool longPress=false;
+byte focuserFault = 0;
+uint32_t flashPosition;
+uint32_t backlash = 0;
+uint32_t PressStartTime, cycleTime;
 int longClickCycles=0;
 int longClickCycleTime=100; // ms
-long lostSteps; // step difference when focuser hits the limit switch at 0 position
+uint32_t lostSteps; // step difference when focuser hits the limit switch at 0 position
 int working=0;
 unsigned int previousPress = 0;
+unsigned int previousBouncePress = 0;
 int contactDebounce = 400;
 int variableTextSize = 2;
 int slipError;
+//bool SingleClickToBacklash = false;
 
 RotaryEncoder *encoder = nullptr;
 OneButton button(ENCODER_SW, true);

@@ -16,19 +16,26 @@ void setup()
     pinMode(STEP, OUTPUT);
     pinMode(BUZZERPIN, OUTPUT);
     pinMode(LIMITSWITCHPIN, INPUT_PULLUP); // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
+    
+    #ifndef DEBUG
+    pinMode(TX2PIN, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(TX2PIN), BacklashInterrupt, FALLING);
+    #endif
 
-#ifdef LIMITSWITCHNORMALLYCLOSED
+    #ifdef LIMITSWITCHNORMALLYCLOSED
     attachInterrupt(digitalPinToInterrupt(LIMITSWITCHPIN), LimitSwitchInterrupt, RISING);
-#else
+    #else
     attachInterrupt(digitalPinToInterrupt(LIMITSWITCHPIN), LimitSwitchInterrupt, FALLING);
-#endif
-    digitalWrite(BUZZERPIN, 0);
+    #endif
 
+    digitalWrite(BUZZERPIN, 0);
     delay (100);
 //    modbus_f.begin(115200);
 //    modbus_f.begin(57600);
 //    modbus_f.begin(38400);
     modbus_f.begin(19200);
+
+    #ifdef DEBUG
 //    Serial2.begin(115200);
 //    Serial2.begin(57600);
 //    Serial2.begin(38400);
@@ -39,15 +46,18 @@ void setup()
         Serial2.println();
     }
     Serial2.println("Serial2 started.");
+    #endif
 
     if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
     {
         // Address 0x3D for 128x64
+        #ifdef DEBUG
         Serial2.println(F("SSD1306 allocation failed"));
+        #endif
     }
 
-    modbus_f.dataBuffer[REGCOMMANDFROMPI] = 0;
-    modbus_f.dataBuffer[REGRESPONSETOPI] = 0;
+    modbus_f.dataBuffer[REGCOMMANDFROMDRIVER] = 0;
+    modbus_f.dataBuffer[REGRESPONSETODRIVER] = 0;
     modbus_f.dataBuffer[REGSTEPPOSITIONLO] = 0;
     modbus_f.dataBuffer[REGSTEPPOSITIONHI] = 0;
     modbus_f.dataBuffer[REGMAXSTEPSLO] = 0;
@@ -56,6 +66,8 @@ void setup()
     modbus_f.dataBuffer[REGTARGETSTEPPOSITIONLO] = 0;
     modbus_f.dataBuffer[REGTARGETSTEPPOSITIONHI] = 0;
     modbus_f.dataBuffer[REGFOCUSERSPEED] = 0;
+    modbus_f.dataBuffer[REGBACKLASHLO] = 0;
+    modbus_f.dataBuffer[REGBACKLASHHI] = 0;
 
     encoder = new RotaryEncoder(ENCODER_CLK, ENCODER_DT, RotaryEncoder::LatchMode::FOUR3);
     attachInterrupt(digitalPinToInterrupt(ENCODER_SW), CheckTicks, CHANGE);
@@ -73,7 +85,10 @@ void setup()
 // Reset flash for debug purposes
 //    SetFlashVar(0);
 
-    GetFlashVar();
+    GetFlashFault();
+    GetFlashPosition();
+    GetFlashBacklash();
+
     if(focuserFault)
     {
         DisplayMessageFocuserFault();
@@ -88,19 +103,62 @@ void setup()
     }
 } // Setup()
 
-void GetFlashVar()
+void GetFlashFault()
 {
     focuserFault = EEPROM.read(0);
+    #ifdef DEBUG
     Serial2.print("Read focuserFault: ");
     Serial2.println(focuserFault);
+    #endif
 }
 
-void SetFlashVar(byte flashValue)
+void SetFlashFault(byte faultValue)
 {
-    focuserFault = flashValue;
+    focuserFault = faultValue;
     EEPROM.write(0, focuserFault);
+    #ifdef DEBUG
     Serial2.print("Saved focuserFault: ");
     Serial2.println(EEPROM.read(0));
+    #endif
+}
+
+uint32_t Get32FromFlash(int position)
+{
+    return EEPROM.read(position) * 16777216 + EEPROM.read(position+1) * 65536 + EEPROM.read(position+2) * 256 + EEPROM.read(position+3);
+}
+
+void Set32ToFlash(int position, uint32_t value)
+{
+    byte b0 = (value & 0xFF);  // Lowest byte
+    byte b1 = ((value >> 8) & 0xFF);
+    byte b2 = ((value >> 16) & 0xFF);
+    byte b3 = ((value >> 24) & 0xFF);
+    EEPROM.write(position, b3);
+    EEPROM.write(position+1, b2);
+    EEPROM.write(position+2, b1);
+    EEPROM.write(position+3, b0);
+}
+
+void GetFlashPosition()
+{
+    flashPosition = Get32FromFlash(1);
+}
+
+void SetFlashPosition(uint32_t positionValue)
+{
+    Set32ToFlash(1, positionValue);
+    GetFlashPosition();
+}
+
+void GetFlashBacklash()
+{
+        backlash = Get32FromFlash(5);
+}
+
+void SetFlashBacklash(uint32_t backlashValue)
+{
+    Set32ToFlash(5, backlashValue);
+    GetFlashBacklash();
 }
 
 
@@ -121,18 +179,18 @@ void LimitSwitchInterrupt()
             if(notInit) // focuser is not initialised
             {
                 lostSteps = fstepper.stepPosition;
-    #ifdef DEBUG
+                #ifdef DEBUG
                 Serial2.print("zerolimitPosition: ");
                 Serial2.println(lostSteps);
-    #endif
+                #endif
                 fstepper.stepPosition = 0;
                 encoder->setPosition(fstepper.stepPosition / fstepper.stepRate);
                 fstepper.stepTarget = 0;
                 previousPress = millis();
                 interruptTriggered = true;
-    #ifdef DEBUG
+                #ifdef DEBUG
                 Serial2.println("Limit Switch!!!");
-    #endif
+                #endif
             }
             else // focuser is initialised and zero position reached
             {
@@ -158,6 +216,33 @@ void LimitSwitchInterrupt()
         Serial2.println("Limit Switch contacts vibrate!!!");
         #endif
     }
+}
+
+void BacklashInterrupt()
+{
+    if ( !backlashInterruptEnable )
+    {
+        return;
+    }
+    if( !digitalRead(TX2PIN) ) // TX2PIN has reversed logic, switch drives pin to ground.
+    { // backlash switch active
+        if( (millis() - previousBouncePress) > contactDebounce )
+        {
+            if(notInit) // focuser is not initialised
+            {
+                return;
+            }
+            fstepper.EnableMotor(false);
+            fstepper.stepTarget = fstepper.stepPosition;
+            backlashInterruptEnable = false;
+        }
+    }
+}
+
+void WaitForBacklashSwitchClick()
+{
+    while( digitalRead(TX2PIN) );
+    return;
 }
 
 #ifdef DEBUG
@@ -225,10 +310,10 @@ void DisplayFocuserData()
     Serial2.println();
 }
 
-unsigned long ReadNumber()
+unsigned uint32_t ReadNumber()
 {
-    unsigned long charsread = 0;
-    unsigned long tempMillis = millis();
+    unsigned uint32_t charsread = 0;
+    unsigned uint32_t tempMillis = millis();
     byte chars = 0;
     do
     {
@@ -432,7 +517,9 @@ void SingleClick()
     fstepper.SetFocuserSpeed(fstepper.speedIndex);
     encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
     DisplayRefresh();
+    #ifdef DEBUG
     Serial2.println("SingleClick() detected.");
+    #endif
     SignalBeep1();
 } // SingleClick
 
@@ -450,7 +537,9 @@ void DoubleClick()
     fstepper.SetFocuserSpeed(fstepper.speedIndex);
     encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
     DisplayRefresh();
+    #ifdef DEBUG
     Serial2.println("DoubleClick() detected.");
+    #endif
     SignalBeep3();
 } // DoubleClick
 
@@ -458,9 +547,11 @@ void DoubleClick()
 void MultiClick()
 {
     int numberOfClicks = button.getNumberClicks();
+    #ifdef DEBUG
     Serial2.print("MultiClick(");
     Serial2.print(numberOfClicks);
     Serial2.println(") detected.");
+    #endif
     switch(numberOfClicks)
     {
         case 3: // go to zero
@@ -471,10 +562,12 @@ void MultiClick()
             SignalBeeps(3, 1500);
             fstepper.SetFocuserSpeed(fstepper.optimalSpeed);
             encoder->setPosition(0);
+            #ifdef DEBUG
             Serial2.println("Focuser to 0.");
+            #endif
             break;
 
-        case 4: // go to middle
+            case 4: // go to middle
             if(focuserFault)
             {
                 return;
@@ -482,7 +575,10 @@ void MultiClick()
             SignalBeeps(4, 1500);
             fstepper.SetFocuserSpeed(fstepper.optimalSpeed);
             encoder->setPosition(fstepper.maxSteps / 2 / fstepper.stepRate);
+            #ifdef DEBUG
             Serial2.println("Focuser to middle");
+            #endif
+            SetFlashPosition(fstepper.maxSteps / 2);
             break;
 
         case 5: // go to max
@@ -493,7 +589,9 @@ void MultiClick()
             SignalBeeps(5, 1500);
             fstepper.SetFocuserSpeed(fstepper.optimalSpeed);
             encoder->setPosition(fstepper.maxSteps / fstepper.stepRate + 1);
+            #ifdef DEBUG
             Serial2.println("Focuser to max.");
+            #endif
             break;
 
         case 6: // sync to zero
@@ -502,16 +600,17 @@ void MultiClick()
                 return;
             }
             SyncToZero();
+            Signal2Beep2();
             break;
 
         case 7: // soft reset
-            GetFlashVar();
+            GetFlashFault();
             notInit = true;
-            FocuserInit();
+            FocuserInit(0);
             break;
 
         case 8: // flash reset
-            SetFlashVar(0);
+            SetFlashFault(0);
             notInit = false;
             DisplayMessageClearFocuserFault();
             SignalBeeps(3, 1500);
@@ -522,18 +621,136 @@ void MultiClick()
             delay(1000);
             break;
 
-            case 9: // display slip error or backlash
+        case 9: // display slip error or backlash
             if( !fstepper.gearedType )
             {
                 DisplayMessageSlipError();
             }
             else
             {
-                DisplayMessageBacklash();
+                DisplayMessageBacklash(backlash);
             }
+            DisplayMessageBacklash(backlash);
+            Signal2Beep2();
             break;
+
+        case 10: // Backlash aid
+            BacklashAid();
+            break;            
+
+        case 11: // Full init
+            FocuserInit(0);
+            break;            
     }
 } // MultiClick
+
+void FindZero(int travelSpeed)
+{
+    #ifdef LIMITSWITCHNORMALLYCLOSED
+    if(!digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
+    #else // Switch normally open
+    if(digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
+    #endif
+    { // limit switch inactive    
+        fstepper.SetFocuserSpeed(travelSpeed);
+        fstepper.stepPosition = fstepper.maxSteps;
+        fstepper.stepTarget = 0;
+        DisplayRefresh();
+        MotorInit();
+        fstepper.PulseStepToTarget();
+        DisplayRefresh();
+    }
+}
+
+void BacklashTravel(int travelSpeed, uint32_t travelTarget)
+{
+    fstepper.SetFocuserSpeed(travelSpeed);
+    fstepper.stepTarget = travelTarget;
+    DisplayRefresh();
+    MotorInit();
+    fstepper.PulseStepToTarget();
+    DisplayRefresh();
+}
+
+void BacklashDetect(int travelSpeed, uint32_t travelTarget)
+{
+    backlashInterruptEnable = true;
+    BacklashTravel(travelSpeed, travelTarget);
+}
+
+void BacklashAid()
+{
+    remoteControlEnabled = false;
+    int travelSpeed = fstepper.optimalSpeed+2;
+    int slowSpeed = fstepper.optimalSpeed - 3;
+    SignalBeeps(10, 1500);
+    DisplayMessageBacklashAid1();
+    WaitForBacklashSwitchClick();
+    delay(1000);
+    SignalBeeps(1, 2000);
+    DisplayMessageBacklashAid2();
+    WaitForBacklashSwitchClick();
+    uint32_t meanBacklash = 0;
+    uint32_t backlashArray[4];
+    bool initBacklash = false;
+    for(int i=0; i<4; i++)
+    {
+        uint32_t instantBaclash1=0;
+        uint32_t instantBaclash2=0;
+        if( initBacklash )
+        {
+            DisplayMessageBacklashReversing();
+            delay(2000);
+        }
+        else
+        {
+            initBacklash = true;
+        }
+        FindZero(travelSpeed);
+        BacklashTravel(travelSpeed, fstepper.maxSteps/2);
+        DisplayMessageBacklashWaitForInput();
+        SignalBeeps(3, 2000);
+        WaitForBacklashSwitchClick();
+        delay(1000);
+        SignalBeeps(1, 2000);
+        BacklashDetect(slowSpeed, fstepper.maxSteps/4);
+        instantBaclash1 = fstepper.maxSteps/2 - fstepper.stepPosition;
+        meanBacklash = instantBaclash1;
+        DisplayMessageBacklashReversing();
+        delay(2000);
+        BacklashTravel(travelSpeed, fstepper.maxSteps*3/4);
+        BacklashTravel(travelSpeed, fstepper.maxSteps/2);
+        DisplayMessageBacklashWaitForInput();
+        SignalBeeps(3, 2000);
+        WaitForBacklashSwitchClick();
+        delay(1000);
+        SignalBeeps(1, 2000);
+        BacklashDetect(slowSpeed, fstepper.maxSteps*3/4);
+        instantBaclash2 = fstepper.stepPosition - fstepper.maxSteps/2;
+        meanBacklash = instantBaclash2;
+        meanBacklash = (instantBaclash1 + instantBaclash2) / 2;
+        backlashArray[i] = meanBacklash;
+    }
+    delay(1000);
+    SignalBeeps(3, 1500);
+    DisplayMessageBacklashDetectionFinished();
+    WaitForBacklashSwitchClick();
+    delay(1000);
+    DisplayMessageBacklashMeasurements( backlashArray[0], backlashArray[1], backlashArray[2], backlashArray[3] );
+    WaitForBacklashSwitchClick();
+    delay(1000);
+    backlash = ( backlashArray[0] + backlashArray[1] + backlashArray[2] + backlashArray[3]) / 4;
+    backlash += backlash * 5 /100;
+    SetFlashBacklash( backlash);
+    DisplayMessageBacklashDetected(backlash);
+    WaitForBacklashSwitchClick();
+    BacklashTravel(travelSpeed, fstepper.maxSteps/2);
+    encoder->setPosition(fstepper.maxSteps/2 / fstepper.stepRate + 1);
+    remoteControlEnabled = true;
+    Signal2Beep2();
+}
+
+
 
 // this function will be called when the button was held down for 1 second or more.
 void PressStart()
@@ -541,7 +758,9 @@ void PressStart()
     // button.tick()
     longPress = true;
     longClickCycles = 0;
+    #ifdef DEBUG
     Serial2.println("PressStart()");
+    #endif
     PressStartTime = millis() - 1000; // as set in setPressTicks()
     cycleTime = PressStartTime;
 } // PressStart()
@@ -550,20 +769,24 @@ void PressStart()
 void PressStop()
 {
     longPress = false;
+    #ifdef DEBUG
     Serial2.print("PressStop(");
     Serial2.print(millis() - PressStartTime);
     Serial2.println(") detected.");
+    #endif
     delay(300);
     Signal2Beep2();
 } // PressStop()
 /////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FocuserInit()
+void FocuserInit(int initMode)
 {
+    #ifdef DEBUG
     Serial2.println("");
     Serial2.print("MaxStepsAbsolute: ");
     Serial2.println(fstepper.maxStepsAbsolute);
     Serial2.println("");
+    #endif
     if(fstepper.maxStepsAbsolute < 1000000)
     {
         variableTextSize = 2;
@@ -581,6 +804,18 @@ void FocuserInit()
     DisplayMessageInitStage1();
     lostSteps = 0;
     fstepper.SetMotorDirection(-1); // retract
+
+    if(initMode == -1)
+    {
+        notInit = false;
+        fstepper.SetFocuserSpeed(11);
+        fstepper.stepPosition = flashPosition;
+        fstepper.stepTarget = flashPosition;
+        encoder->setPosition(flashPosition / fstepper.stepRate + 1);
+        DisplayRefresh();
+        return;
+    }    
+
 #ifdef LIMITSWITCHNORMALLYCLOSED
     if(!digitalRead(LIMITSWITCHPIN)) // LIMITSWITCHPIN has reversed logic, switch drives pin to ground.
 #else // Switch normally open
@@ -588,7 +823,9 @@ void FocuserInit()
 #endif
         // Stage 1. - Finding zero position
     { // limit switch inactive
+        #ifdef DEBUG
         Serial2.println("INIT: 1. Focuser at unknown position...");
+        #endif
         fstepper.maxSteps = fstepper.maxStepsAbsolute + fstepper.maxStepsAbsolute * SAFETYMAXLIMDECREASEPERCENT / 100 / 2;
         fstepper.stepPosition = fstepper.maxSteps;
         fstepper.SetFocuserSpeed(fstepper.optimalSpeed);
@@ -596,6 +833,7 @@ void FocuserInit()
         fstepper.stepTarget = 0;
         fstepper.PulseStepToTarget();
         lostSteps = 0;
+        #ifdef DEBUG
         Serial2.println("");
         Serial2.println("INIT: 1. Seeking zero position");
         Serial2.print("MaxSteps: ");
@@ -606,13 +844,15 @@ void FocuserInit()
         Serial2.print(fstepper.stepTarget);
         Serial2.print("; LostSteps: ");
         Serial2.println(lostSteps);
+        #endif
         SignalBeeps(2, 1500);
         delay(1000);
     }
     else
     {
-        Serial2.println("INIT: 1. Focuser at zero position...");
         fstepper.stepPosition = 0;
+        #ifdef DEBUG
+        Serial2.println("INIT: 1. Focuser at zero position...");
         Serial2.print("MaxSteps: ");
         Serial2.print(fstepper.maxSteps);
         Serial2.print("; StepPosition: ");
@@ -621,6 +861,7 @@ void FocuserInit()
         Serial2.print(fstepper.stepTarget);
         Serial2.print("; LostSteps: ");
         Serial2.println(lostSteps);
+        #endif
     }
 
 #ifdef LIMITSWITCHNORMALLYCLOSED
@@ -636,11 +877,28 @@ void FocuserInit()
         return;
     }
 
+    // Skipping the rest of the init stages for mode = 1
+    if(initMode == 1)
+    {
+        fstepper.SetFocuserSpeed(11);
+        fstepper.stepTarget = flashPosition + backlash * 2;
+        MotorInit();
+        fstepper.PulseStepToTarget();
+        fstepper.stepTarget = flashPosition;
+        fstepper.PulseStepToTarget();
+        encoder->setPosition(flashPosition / fstepper.stepRate + 1);
+        DisplayRefresh();
+        notInit = false;
+        return;
+    }
+
     // Stage 2. - Going to max. extend position
     DisplayMessageInitStage2();
     fstepper.maxSteps = fstepper.maxStepsAbsolute;
+    #ifdef DEBUG
     Serial2.println("");
     Serial2.println("INIT: 2. Going to max. position");
+    #endif
     MotorInit();
     fstepper.SetFocuserSpeed(fstepper.optimalSpeed);
 
@@ -657,7 +915,7 @@ void FocuserInit()
         remoteControlEnabled = false;
         notInit = false;
         focuserFault = 1;
-        SetFlashVar(1);
+        SetFlashFault(1);
         SignalBeeps(5, 1500);
         delay(1000);
         SignalBeeps(5, 1500);
@@ -673,6 +931,7 @@ void FocuserInit()
 
     fstepper.stepTarget = fstepper.maxSteps;
     fstepper.PulseStepToTarget();
+    #ifdef DEBUG
     Serial2.print("MaxSteps: ");
     Serial2.print(fstepper.maxSteps);
     Serial2.print("; StepPosition: ");
@@ -681,6 +940,7 @@ void FocuserInit()
     Serial2.print(fstepper.stepTarget);
     Serial2.print("; LostSteps: ");
     Serial2.println(lostSteps);
+    #endif
     SignalBeeps(2, 1500);
     delay(1000);
 
@@ -694,7 +954,7 @@ void FocuserInit()
         remoteControlEnabled = false;
         notInit = false;
         focuserFault = 1;
-        SetFlashVar(1);
+        SetFlashFault(1);
         SignalBeeps(5, 1500);
         delay(1000);
         SignalBeeps(5, 1500);
@@ -710,12 +970,15 @@ void FocuserInit()
 
     // Stage 3. - Approaching the zero position
     DisplayMessageInitStage3();
+    #ifdef DEBUG
     Serial2.println("");
     Serial2.println("INIT: 3. Approaching zero position");
+    #endif
     fstepper.SetFocuserSpeed(fstepper.optimalSpeed);
     //  fstepper.stepTarget = 20000;
     fstepper.stepTarget = fstepper.maxStepsAbsolute / 8;
     fstepper.PulseStepToTarget();
+    #ifdef DEBUG
     Serial2.print("MaxSteps: ");
     Serial2.print(fstepper.maxSteps);
     Serial2.print("; StepPosition: ");
@@ -724,6 +987,7 @@ void FocuserInit()
     Serial2.print(fstepper.stepTarget);
     Serial2.print("; LostSteps: ");
     Serial2.println(lostSteps);
+    #endif
     SignalBeeps(2, 1500);
 
 #ifdef LIMITSWITCHNORMALLYCLOSED
@@ -741,14 +1005,17 @@ void FocuserInit()
 
     // Stage 4. - Seek zero position at low speed, correct max. steps
     DisplayMessageInitStage4();
+    #ifdef DEBUG
     Serial2.println("");
     Serial2.println("INIT: 4. Seeking zero position at low speed");
+    #endif
     fstepper.SetFocuserSpeed(fstepper.optimalSpeed - 1);
     fstepper.stepPosition = fstepper.maxStepsAbsolute /
                             4; // raise position to engage the limit switch when going to zero position
     fstepper.stepTarget = 0;
     fstepper.PulseStepToTarget();
     fstepper.maxSteps -= (lostSteps - fstepper.maxStepsAbsolute / 8);
+    #ifdef DEBUG
     Serial2.print("MaxSteps: ");
     Serial2.print(fstepper.maxSteps);
     Serial2.print("; StepPosition: ");
@@ -757,6 +1024,7 @@ void FocuserInit()
     Serial2.print(fstepper.stepTarget);
     Serial2.print("; LostSteps: ");
     Serial2.println(lostSteps - (long)fstepper.maxStepsAbsolute / 8);
+    #endif
     SignalBeeps(2, 1500);
     delay(1000);
 
@@ -800,7 +1068,9 @@ void FocuserInit()
         fstepper.PulseStepToTarget();
         encoder->setPosition(fstepper.maxSteps / 2 / fstepper.stepRate);
         Signal2Beep2();
+        #ifdef DEBUG
         Serial2.println("Focuser to middle");
+        #endif
         DisplayRefresh();
 #ifdef DEBUG
         DisplayMenu();
@@ -819,8 +1089,10 @@ void SyncToZero()
 #endif
         // Finding zero position
     {
+        #ifdef DEBUG
         Serial2.println("");
         Serial2.println("Zero sync: Going to zero position");
+        #endif
         fstepper.maxSteps = fstepper.maxStepsAbsolute + fstepper.maxStepsAbsolute / 10;
         fstepper.stepPosition = fstepper.maxSteps;
         fstepper.SetFocuserSpeed(fstepper.optimalSpeed);
@@ -832,7 +1104,9 @@ void SyncToZero()
     }
     else
     {
+        #ifdef DEBUG
         Serial2.println("Zero sync: Focuser at zero position...");
+        #endif
         fstepper.stepPosition = 0;
         Signal2Beep2();
     }
@@ -841,6 +1115,492 @@ void SyncToZero()
     DisplayRefresh();
 }
 
+void ModbusPoll()
+{
+    modbus_f.dataBuffer[REGSTEPPOSITIONLO] = fstepper.stepPosition & 65535;
+    modbus_f.dataBuffer[REGSTEPPOSITIONHI] = fstepper.stepPosition >> 16;
+    modbus_f.dataBuffer[REGMAXSTEPSLO] = fstepper.maxSteps & 65535;
+    modbus_f.dataBuffer[REGMAXSTEPSHI] = fstepper.maxSteps >> 16;
+    modbus_f.dataBuffer[REGMOTORENABLED] = fstepper.motorEnable;
+    modbus_f.dataBuffer[REGTARGETSTEPPOSITIONLO] = fstepper.stepTarget & 65535;
+    modbus_f.dataBuffer[REGTARGETSTEPPOSITIONHI] = fstepper.stepTarget >> 16;
+    modbus_f.dataBuffer[REGFOCUSERSPEED] = fstepper.speedIndex;
+    modbus_f.dataBuffer[REGREMOTECONTROL] = remoteControlEnabled;
+    modbus_f.dataBuffer[REGFAULT] = focuserFault;
+    modbus_f.dataBuffer[REGBACKLASHLO] = backlash & 65535;
+    modbus_f.dataBuffer[REGBACKLASHHI] = backlash >> 16;
+
+    if(fstepper.motorDirection > 0)
+    {
+        modbus_f.dataBuffer[REGDIRECTION] = 1;
+    }
+    else
+    {
+        modbus_f.dataBuffer[REGDIRECTION] = 2;
+    }
+    modbus_f.poll(NUMBEROFREGISTERS);
+}
+
+void CommandProcessor()
+{
+    uint32_t newFlashPosition;
+    if( !modbus_f.dataBuffer[REGCOMMANDFROMDRIVER] || focuserFault )
+    {
+        return;
+    }
+    #ifdef DEBUG
+    Serial2.print("Remote Command: ");
+    Serial2.print( modbus_f.dataBuffer[REGCOMMANDFROMDRIVER]);
+    Serial2.print(" - ");
+    #endif
+    unsigned long relativeSteps;
+    switch(modbus_f.dataBuffer[REGCOMMANDFROMDRIVER])
+    {
+        case CMDSPEED1:
+            #ifdef DEBUG
+            Serial2.println("Speed 1");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDSPEED2:
+            #ifdef DEBUG
+            Serial2.println("Speed 2");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            DisplayRefresh();
+            Signal2Beep2();
+            break;
+            
+        case CMDSPEED3:
+            #ifdef DEBUG
+            Serial2.println("Speed 3");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDSPEED4:
+            #ifdef DEBUG
+            Serial2.println("Speed 4");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDSPEED5:
+            #ifdef DEBUG
+            Serial2.println("Speed 5");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDSPEED6:
+            #ifdef DEBUG
+            Serial2.println("Speed 6");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDSPEED7:
+            #ifdef DEBUG
+            Serial2.println("Speed 7");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDSPEED8:
+            #ifdef DEBUG
+            Serial2.println("Speed 8");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDSPEED9:
+            #ifdef DEBUG
+            Serial2.println("Speed 9");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDSPEED10:
+            #ifdef DEBUG
+            Serial2.println("Speed 10");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDSPEED11:
+            #ifdef DEBUG
+            Serial2.println("Speed 11");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDSPEED12:
+            #ifdef DEBUG
+            Serial2.println("Speed 12");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDSPEED13:
+            #ifdef DEBUG
+            Serial2.println("Speed 13");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDSPEED14:
+            #ifdef DEBUG
+            Serial2.println("Speed 14");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDSPEED15:
+            #ifdef DEBUG
+            Serial2.println("Speed 15");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDENABLEMOTOR:
+            #ifdef DEBUG
+            Serial2.println("Enable motor");
+            #endif // DEBUG
+            fstepper.EnableMotor(true);
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDDISABLEMOTOR:
+            #ifdef DEBUG
+            Serial2.println("Disable motor");
+            #endif // DEBUG
+            fstepper.EnableMotor(false);
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDINIT:
+            #ifdef DEBUG
+            Serial2.println("Focuser init");
+            #endif // DEBUG
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// init fails if called from here. Check the values of the FocuserStepper class members set by the constructor
+//  
+//     set notInit = true before calling FocuserInit
+//
+            GetFlashFault();
+            notInit = true;
+            FocuserInit(1);
+            break;
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+        case CMDSETSPEED:
+            #ifdef DEBUG
+            Serial2.println("Set speed");
+            #endif // DEBUG
+            modbus_f.dataBuffer[REGFOCUSERSPEED] = 12;
+            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDGOTOZERO:
+            #ifdef DEBUG
+            Serial2.println("Goto zero");
+            #endif // DEBUG
+            fstepper.SetFocuserSpeed(12);
+            fstepper.stepPosition = fstepper.maxSteps;
+            fstepper.stepTarget = 0;
+            fstepper.PulseStepToTarget();
+            encoder->setPosition(0);
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDGOTOMAX:
+            #ifdef DEBUG
+            Serial2.println("Goto max position");
+            #endif // DEBUG
+            fstepper.SetFocuserSpeed(12);
+            fstepper.stepPosition = 0;
+            fstepper.stepTarget = fstepper.maxSteps;
+            fstepper.PulseStepToTarget();
+            encoder->setPosition(fstepper.maxSteps / fstepper.stepRate + 1);
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDGOTOPOSITION:
+            fstepper.stepTarget = modbus_f.dataBuffer[REGREQUESTEDPOSITIONLO] + modbus_f.dataBuffer[REGREQUESTEDPOSITIONHI] * 65536;
+            #ifdef DEBUG
+            Serial2.print("Goto position: ");
+            Serial2.println(fstepper.stepTarget);
+            #endif // DEBUG
+            remoteControlEnabled = false;
+            relativeSteps = abs(fstepper.stepTarget - fstepper.stepPosition);
+            fstepper.CorrelateSpeed(relativeSteps);
+            fstepper.PulseStepToTarget();
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case CMDGOTORELATIVE:
+            unsigned long relativeSteps;
+            relativeSteps = modbus_f.dataBuffer[REGREQUESTEDPOSITIONLO] + modbus_f.dataBuffer[REGREQUESTEDPOSITIONHI] * 65536;
+            #ifdef DEBUG
+            Serial2.print("Goto Relative position: ");
+            Serial2.println(relativeSteps);
+            #endif // DEBUG
+            remoteControlEnabled = false;
+            fstepper.EnableMotor(true);
+            fstepper.CorrelateSpeed(relativeSteps);
+            fstepper.RelativePulseStepToTarget(relativeSteps);
+            Signal2Beep2();
+            DisplayRefresh();
+            break;
+
+        case TICKPLUS:
+            #ifdef DEBUG
+            Serial2.println("Tick +");
+            #endif // DEBUG
+            encoder->setPosition(encoder->getPosition() + 1);
+            Signal2Beep2();
+            break;
+
+        case TICKMINUS:
+            #ifdef DEBUG
+            Serial2.println("Tick -");
+            #endif // DEBUG
+            encoder->setPosition(encoder->getPosition() - 1);
+            Signal2Beep2();
+            break;
+
+        case CMDEXTEND:
+            #ifdef DEBUG
+            Serial2.println("Direction: extend");
+            #endif // DEBUG
+            fstepper.SetMotorDirection(1);
+            Signal2Beep2();
+            break;
+
+        case CMDRETRACT:
+            #ifdef DEBUG
+            Serial2.println("Direction: retract");
+            #endif // DEBUG
+            fstepper.SetMotorDirection(-1);
+            Signal2Beep2();
+            break;
+
+        case CMDREMOTEENABLE:
+            #ifdef DEBUG
+            Serial2.println("Remote Control enabled");
+            #endif // DEBUG
+            remoteControlEnabled = true;
+            encoder->setPosition(fstepper.stepTarget / fstepper.stepRate);
+            Signal2Beep2();
+            break;
+
+        case CMDREMOTEDISABLE:
+            #ifdef DEBUG
+            Serial2.println("Remote Control disabled");
+            #endif // DEBUG
+            remoteControlEnabled = false;
+            Signal2Beep2();
+            break;
+
+        case CMDSETPOSITION:
+            newFlashPosition = modbus_f.dataBuffer[REGFLASHPOSITIONLO] + modbus_f.dataBuffer[REGFLASHPOSITIONHI] * 65536;
+            SetFlashPosition(newFlashPosition);
+            Signal2Beep2();
+        break;
+
+        default:
+            #ifdef DEBUG
+            Serial2.print("Unknown remote command to execute: ");
+            Serial2.println(modbus_f.dataBuffer[REGCOMMANDFROMDRIVER]);
+            #endif
+            break;
+    }
+
+    modbus_f.dataBuffer[REGRESPONSETODRIVER] = modbus_f.dataBuffer[REGCOMMANDFROMDRIVER];
+    modbus_f.dataBuffer[REGCOMMANDFROMDRIVER] = 0;
+} // CommandProcessor()
+
+void loop()
+{
+    if(notInit && !focuserFault)
+    {
+        FocuserInit(1);
+    }
+    ModbusPoll();
+    CommandProcessor();
+#ifdef DEBUG
+    KeyboardOperationSelect();
+#endif
+    if(remoteControlEnabled)
+    {
+        if(fstepper.stepPosition != fstepper.stepTarget)
+        {
+            bool endBeeps = false;
+            if(abs(fstepper.stepPosition - fstepper.stepTarget) > 10000)
+            {
+                endBeeps = true;
+            }
+            MotorInit();
+            DisplayRefresh();
+            if(!focuserFault)
+            {
+                fstepper.PulseStepToTarget();
+            }
+            if(endBeeps)
+            {
+                Signal2Beep2();
+            }
+            DisplayRefresh();
+        }
+        if( (fstepper.stepPosition == 0) & interruptTriggered)
+        {
+            SignalBeeps(2, 2000);
+            DisplayRefresh();
+            interruptTriggered = false;
+        }
+        encoder->tick(); // just call tick() to check the state.
+        int newPos = encoder->getPosition();
+        if (pos != newPos)
+        {
+            if(newPos >= 0)
+            {
+                pos = newPos;
+            }
+            else
+            {
+                newPos = 0;
+                encoder->setPosition(0);
+            }
+            int maxPos = fstepper.maxSteps / fstepper.stepRate + 1;
+            if(newPos <= maxPos)
+            {
+                pos = newPos;
+            }
+            else
+            {
+                encoder->setPosition(maxPos);
+            }
+            fstepper.stepTarget = pos * fstepper.stepRate;
+            if(fstepper.stepTarget > fstepper.maxSteps)
+            {
+                fstepper.stepTarget = fstepper.maxSteps;
+            }
+            if(fstepper.stepTarget < 0)
+            {
+                fstepper.stepTarget = 0;
+            }
+        } // if  (pos != newPos)
+
+        // keep watching the push button, even when no interrupt happens:
+        button.tick();
+        if( (millis() - cycleTime > longClickCycleTime) && longPress)
+        {
+            if(fstepper.speedIndex < 15)
+            {
+                fstepper.speedIndex++;
+            }
+            fstepper.SetFocuserSpeed(fstepper.speedIndex);
+            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
+            DisplayRefresh();
+            longClickCycles++;
+            #ifdef DEBUG
+            Serial2.print("LongPressCycles: ");
+            Serial2.println(longClickCycles);
+            #endif
+            cycleTime = millis();
+            SignalBeep2();
+        }
+    } // if(remoteControlEnabled)
+} // loop
+
+
+/////////////////////////////// Messages & Beeps ///////////////////////////////
 void DisplayRefresh()
 {
     display.clearDisplay();
@@ -858,7 +1618,6 @@ void DisplayRefresh()
     display.display();
 }
 
-
 void DisplayMessageRegulusFocuser()
 {
     display.clearDisplay();
@@ -868,7 +1627,6 @@ void DisplayMessageRegulusFocuser()
     display.println("  Regulus");
     display.println("  Focuser");
 }
-
 
 void DisplayMessageInitStartMessage()
 {
@@ -1025,7 +1783,6 @@ void DisplayMessageInitStageFinalBacklash()
     display.display();
 }
 
-
 void DisplayMessageSlipError()
 {
     DisplayMessageRegulusFocuser();
@@ -1035,17 +1792,6 @@ void DisplayMessageSlipError()
     display.println(slipError);
     display.display();
 }
-
-void DisplayMessageBacklash()
-{
-    DisplayMessageRegulusFocuser();
-    display.setTextSize(1);
-    display.println("");
-    display.print("Backlash: ");
-    display.println(slipError);
-    display.display();
-}
-
 
 void DisplayMessageInitErrorSlipping()
 {
@@ -1080,6 +1826,139 @@ void DisplayMessageZeroSync()
     display.display();
 }
 
+void DisplayMessageBacklash(uint32_t backlash)
+{
+    DisplayMessageRegulusFocuser();
+//    display.setTextSize(1);
+//    display.println("");
+//    display.print("Backlash: ");
+//    display.println(slipError);
+//    display.display();
+
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.println("  BACKLASH");
+    display.setTextSize(1);
+    display.println();
+    display.println("Backlash value:");
+    display.println(backlash);
+    display.println();
+    display.println("FlashPos value:");
+    display.println(flashPosition);
+    display.display();
+}
+
+void DisplayMessageBacklashAid1()
+{
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.println("  BACKLASH");
+    display.println("    AID");
+    display.setTextSize(1);
+    display.println("Connect switch to");
+    display.println("the Tx pin.");
+    display.println("  Press switch");
+    display.println("   to continue...");
+    display.display();
+}
+
+void DisplayMessageBacklashAid2()
+{
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.println("  BACKLASH");
+    display.println();
+    display.setTextSize(1);
+    display.println("8 measurements");
+    display.println("will be made.");
+    display.println("  Press switch");
+    display.println("   to continue...");
+    display.display();
+}
+
+void DisplayMessageBacklashWaitForInput()
+{
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.println("  BACKLASH");
+    display.setTextSize(1);
+    display.println("Motor will move slow,");
+    display.println("press the button");
+    display.println("on the switch when");
+    display.println("wheel starts moving.");
+    display.println("    Press switch");
+    display.println("      to start...");
+    display.display();
+}
+
+void DisplayMessageBacklashReversing()
+{
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.println("  BACKLASH");
+     display.println("");
+    display.println("Reversing");
+    display.println("direction");
+    display.display();
+}
+
+void DisplayMessageBacklashDetectionFinished()
+{
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.println("  BACKLASH");
+    display.println("Detection");
+    display.println("finished!");
+    display.setTextSize(1);
+    display.println("Press switch...");
+    display.display();
+}
+
+void DisplayMessageBacklashDetected(uint32_t value)
+{
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.println("  BACKLASH");
+    display.setTextSize(1);
+    display.println("Backlash value:");
+    display.println(value);
+    display.println();
+    display.println("Backlash stored");
+    display.println("into flash memory.");
+    display.println("Press switch...");
+    display.display();
+}
+
+void DisplayMessageBacklashMeasurements(uint32_t value1, uint32_t value2, uint32_t value3, uint32_t value4)
+{
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.println("  BACKLASH");
+    display.setTextSize(1);
+    display.println("Detected values:");
+    display.println(value1);
+    display.println(value2);
+    display.println(value3);
+    display.println(value4);
+    display.println("Press switch...");
+    display.display();
+}
 
 void SignalBeeps( int nbeeps, int beepFreq)
 {
@@ -1130,426 +2009,4 @@ void SignalBeep3()
     delay(150);
 }
 
-void ModbusPoll()
-{
-    modbus_f.dataBuffer[REGSTEPPOSITIONLO] = fstepper.stepPosition & 65535;
-    modbus_f.dataBuffer[REGSTEPPOSITIONHI] = fstepper.stepPosition >> 16;
-    modbus_f.dataBuffer[REGMAXSTEPSLO] = fstepper.maxSteps & 65535;
-    modbus_f.dataBuffer[REGMAXSTEPSHI] = fstepper.maxSteps >> 16;
-    modbus_f.dataBuffer[REGMOTORENABLED] = fstepper.motorEnable;
-    modbus_f.dataBuffer[REGTARGETSTEPPOSITIONLO] = fstepper.stepTarget & 65535;
-    modbus_f.dataBuffer[REGTARGETSTEPPOSITIONHI] = fstepper.stepTarget >> 16;
-    modbus_f.dataBuffer[REGFOCUSERSPEED] = fstepper.speedIndex;
-    modbus_f.dataBuffer[REGREMOTECONTROL] = remoteControlEnabled;
-    modbus_f.dataBuffer[REGFAULT] = focuserFault;
 
-    if(fstepper.motorDirection > 0)
-    {
-        modbus_f.dataBuffer[REGDIRECTION] = 1;
-    }
-    else
-    {
-        modbus_f.dataBuffer[REGDIRECTION] = 2;
-    }
-    modbus_f.poll(NUMBEROFREGISTERS);
-}
-
-void CommandProcessor()
-{
-    if( !modbus_f.dataBuffer[REGCOMMANDFROMPI] || focuserFault )
-    {
-        return;
-    }
-#ifdef DEBUG
-    Serial2.print("Remote Command: ");
-    Serial2.print( modbus_f.dataBuffer[REGCOMMANDFROMPI]);
-    Serial2.print(" - ");
-#endif
-    unsigned long relativeSteps;
-    switch(modbus_f.dataBuffer[REGCOMMANDFROMPI])
-    {
-        case 1:
-#ifdef DEBUG
-            Serial2.println("Speed 1");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            break;
-        case 2:
-#ifdef DEBUG
-            Serial2.println("Speed 2");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            break;
-
-        case 3:
-#ifdef DEBUG
-            Serial2.println("Speed 3");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            break;
-        case 4:
-#ifdef DEBUG
-            Serial2.println("Speed 4");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            break;
-        case 5:
-#ifdef DEBUG
-            Serial2.println("Speed 5");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            break;
-        case 6:
-#ifdef DEBUG
-            Serial2.println("Speed 6");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            break;
-        case 7:
-#ifdef DEBUG
-            Serial2.println("Speed 7");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            break;
-        case 8:
-#ifdef DEBUG
-            Serial2.println("Speed 8");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            break;
-        case 9:
-#ifdef DEBUG
-            Serial2.println("Speed 9");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            break;
-        case 10:
-#ifdef DEBUG
-            Serial2.println("Speed 10");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            break;
-        case 11:
-#ifdef DEBUG
-            Serial2.println("Speed 11");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            break;
-        case 12:
-#ifdef DEBUG
-            Serial2.println("Speed 12");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            break;
-        case 13:
-#ifdef DEBUG
-            Serial2.println("Speed 13");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            break;
-        case 14:
-#ifdef DEBUG
-            Serial2.println("Speed 14");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            break;
-        case 15:
-#ifdef DEBUG
-            Serial2.println("Speed 15");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            break;
-        case CMDENABLEMOTOR:
-#ifdef DEBUG
-            Serial2.println("Enable motor");
-#endif // DEBUG
-            fstepper.EnableMotor(true);
-            DisplayRefresh();
-            break;
-        case CMDDISABLEMOTOR:
-#ifdef DEBUG
-            Serial2.println("Disable motor");
-#endif // DEBUG
-            fstepper.EnableMotor(false);
-            DisplayRefresh();
-            break;
-        case CMDINIT:
-#ifdef DEBUG
-            Serial2.println("Focuser init");
-#endif // DEBUG
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// init fails if called from here. Check the values of the FocuserStepper class members set by the constructor
-//  
-//     set notInit = true before calling FocuserInit
-//
-            GetFlashVar();
-            notInit = true;
-            FocuserInit();
-            break;
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-        case CMDSETSPEED:
-#ifdef DEBUG
-            Serial2.println("Set speed");
-#endif // DEBUG
-            modbus_f.dataBuffer[REGFOCUSERSPEED] = 12;
-            fstepper.speedIndex = modbus_f.dataBuffer[REGFOCUSERSPEED];
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            DisplayRefresh();
-            break;
-        case CMDGOTOZERO:
-#ifdef DEBUG
-            Serial2.println("Goto zero");
-#endif // DEBUG
-            fstepper.SetFocuserSpeed(12);
-            fstepper.stepPosition = fstepper.maxSteps;
-            fstepper.stepTarget = 0;
-            fstepper.PulseStepToTarget();
-            encoder->setPosition(0);
-            DisplayRefresh();
-            break;
-        case CMDGOTOMAX:
-#ifdef DEBUG
-            Serial2.println("Goto max position");
-#endif // DEBUG
-            fstepper.SetFocuserSpeed(12);
-            fstepper.stepPosition = 0;
-            fstepper.stepTarget = fstepper.maxSteps;
-            fstepper.PulseStepToTarget();
-            encoder->setPosition(fstepper.maxSteps / fstepper.stepRate + 1);
-            DisplayRefresh();
-            break;
-
-        case CMDGOTOPOSITION:
-            fstepper.stepTarget = modbus_f.dataBuffer[REGREQUESTEDPOSITIONLO] + modbus_f.dataBuffer[REGREQUESTEDPOSITIONHI] * 65536;
-#ifdef DEBUG
-            Serial2.print("Goto position: ");
-            Serial2.println(fstepper.stepTarget);
-#endif // DEBUG
-            remoteControlEnabled = false;
-            relativeSteps = abs(fstepper.stepTarget - fstepper.stepPosition);
-            fstepper.CorrelateSpeed(relativeSteps);
-            fstepper.PulseStepToTarget();
-            DisplayRefresh();
-            break;
-
-        case CMDGOTORELATIVE:
-            unsigned long relativeSteps;
-            relativeSteps = modbus_f.dataBuffer[REGREQUESTEDPOSITIONLO] + modbus_f.dataBuffer[REGREQUESTEDPOSITIONHI] * 65536;
-#ifdef DEBUG
-            Serial2.print("Goto Relative position: ");
-            Serial2.println(relativeSteps);
-#endif // DEBUG
-            remoteControlEnabled = false;
-            fstepper.EnableMotor(true);
-            fstepper.CorrelateSpeed(relativeSteps);
-            fstepper.RelativePulseStepToTarget(relativeSteps);
-            DisplayRefresh();
-            break;
-
-        case TICKPLUS:
-#ifdef DEBUG
-            Serial2.println("Tick +");
-#endif // DEBUG
-            encoder->setPosition(encoder->getPosition() + 1);
-            break;
-        case TICKMINUS:
-#ifdef DEBUG
-            Serial2.println("Tick -");
-#endif // DEBUG
-            encoder->setPosition(encoder->getPosition() - 1);
-            break;
-
-        case CMDEXTEND:
-#ifdef DEBUG
-            Serial2.println("Direction: extend");
-#endif // DEBUG
-            fstepper.SetMotorDirection(1);
-            break;
-
-        case CMDRETRACT:
-#ifdef DEBUG
-            Serial2.println("Direction: retract");
-#endif // DEBUG
-            fstepper.SetMotorDirection(-1);
-            break;
-
-        case CMDREMOTEENABLE:
-#ifdef DEBUG
-            Serial2.println("Remote Control enabled");
-#endif // DEBUG
-            remoteControlEnabled = true;
-            encoder->setPosition(fstepper.stepTarget / fstepper.stepRate);
-            break;
-
-        case CMDREMOTEDISABLE:
-#ifdef DEBUG
-            Serial2.println("Remote Control disabled");
-#endif // DEBUG
-            remoteControlEnabled = false;
-            break;
-
-        default:
-            Serial2.print("Unknown remote command to execute: ");
-            Serial2.println(modbus_f.dataBuffer[REGCOMMANDFROMPI]);
-            break;
-    }
-
-    modbus_f.dataBuffer[REGRESPONSETOPI] = modbus_f.dataBuffer[REGCOMMANDFROMPI];
-    modbus_f.dataBuffer[REGCOMMANDFROMPI] = 0;
-} // CommandProcessor()
-
-
-void loop()
-{
-    if(notInit && !focuserFault)
-    {
-        FocuserInit();
-    }
-    ModbusPoll();
-    CommandProcessor();
-#ifdef DEBUG
-    KeyboardOperationSelect();
-#endif
-    if(remoteControlEnabled)
-    {
-        if(fstepper.stepPosition != fstepper.stepTarget)
-        {
-            bool endBeeps = false;
-            if(abs(fstepper.stepPosition - fstepper.stepTarget) > 10000)
-            {
-                endBeeps = true;
-            }
-            MotorInit();
-            DisplayRefresh();
-            if(!focuserFault)
-            {
-                fstepper.PulseStepToTarget();
-            }
-            if(endBeeps)
-            {
-                Signal2Beep2();
-            }
-            DisplayRefresh();
-        }
-        if( (fstepper.stepPosition == 0) & interruptTriggered)
-        {
-            SignalBeeps(2, 2000);
-            DisplayRefresh();
-            interruptTriggered = false;
-        }
-        encoder->tick(); // just call tick() to check the state.
-        int newPos = encoder->getPosition();
-        if (pos != newPos)
-        {
-            if(newPos >= 0)
-            {
-                pos = newPos;
-            }
-            else
-            {
-                newPos = 0;
-                encoder->setPosition(0);
-            }
-            int maxPos = fstepper.maxSteps / fstepper.stepRate + 1;
-            if(newPos <= maxPos)
-            {
-                pos = newPos;
-            }
-            else
-            {
-                encoder->setPosition(maxPos);
-            }
-            fstepper.stepTarget = pos * fstepper.stepRate;
-            if(fstepper.stepTarget > fstepper.maxSteps)
-            {
-                fstepper.stepTarget = fstepper.maxSteps;
-            }
-            if(fstepper.stepTarget < 0)
-            {
-                fstepper.stepTarget = 0;
-            }
-        } // if  (pos != newPos)
-
-        // keep watching the push button, even when no interrupt happens:
-        button.tick();
-        if( (millis() - cycleTime > longClickCycleTime) && longPress)
-        {
-            if(fstepper.speedIndex < 15)
-            {
-                fstepper.speedIndex++;
-            }
-            fstepper.SetFocuserSpeed(fstepper.speedIndex);
-            encoder->setPosition(fstepper.stepPosition / fstepper.stepRate); // recompute encoder position
-            DisplayRefresh();
-            longClickCycles++;
-            Serial2.print("LongPressCycles: ");
-            Serial2.println(longClickCycles);
-            cycleTime = millis();
-            SignalBeep2();
-        }
-    } // if(remoteControlEnabled)
-} // loop

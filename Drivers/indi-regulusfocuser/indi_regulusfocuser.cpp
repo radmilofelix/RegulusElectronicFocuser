@@ -105,13 +105,19 @@ bool RegulusFocuser::initProperties()
     ResetSP[0].fill("Reset", "Reset", ISS_OFF);
     ResetSP.fill(getDeviceName(), "Reset", "Reset", MAIN_CONTROL_TAB, IP_RW, ISR_1OFMANY, 60, IPS_IDLE);
 
+    SetPositionSP[0].fill("SetPosition", "SetPosition", ISS_OFF);
+    SetPositionSP.fill(getDeviceName(), "SetPosition", "SetPosition", MAIN_CONTROL_TAB, IP_RW, ISR_1OFMANY, 60, IPS_IDLE);
+
     FocuserFaultLP[0].fill("FocuserFault", "Focuser Status", IPS_IDLE);
- //   FocuserFaultLP[0].fill("dfgh", "", IPS_IDLE);
     FocuserFaultLP.fill(getDeviceName(), "FocuserFault", "FocuserFault", MAIN_CONTROL_TAB, IPS_IDLE);
 //                           device            name        label         group         state
 
     FocusMaxPosNP[0].fill("FOCUS_MAX_VALUE", "Steps", "%.f", 1, 150000, 1, 50000);
     FocusMaxPosNP.fill(getDeviceName(), "FOCUS_MAX", "Max. Position", MAIN_CONTROL_TAB, IP_RO, 60, IPS_OK);
+    
+    // Backlash
+    BacklashNP[0].fill("BACKLASH", "Steps", "%.f", 0., 5000000., 0., 0.);
+    BacklashNP.fill(getDeviceName(), "BACKLASH", "Backlash", MAIN_CONTROL_TAB, IP_RO, 0, IPS_IDLE);
 
     FocusSpeedNP[0].min   = 1;
     FocusSpeedNP[0].max   = 15;
@@ -123,9 +129,6 @@ bool RegulusFocuser::initProperties()
     FocusAbsPosNP[0].value = 0;
 
     internalTicks = FocusAbsPosNP[0].value;
-
-//	SetFocuserBacklashEnabled(true);
-//	SetFocuserBacklash(5000);
 
     return true;
 }
@@ -141,13 +144,17 @@ bool RegulusFocuser::updateProperties()
     {
         defineProperty(RemoteControlSP);
         defineProperty(ResetSP);
+        defineProperty(SetPositionSP);
         defineProperty(FocuserFaultLP);
+        defineProperty(BacklashNP);
     }
     else
     {
         deleteProperty(RemoteControlSP);
         deleteProperty(ResetSP);
+        deleteProperty(SetPositionSP);
         deleteProperty(FocuserFaultLP);
+        deleteProperty(BacklashNP);
     }
 
     return true;
@@ -234,17 +241,20 @@ bool RegulusFocuser::ISNewSwitch(const char *dev, const char *name, ISState *sta
 					FocuserFaultLP.apply();
 					RemoteControlSP.apply();
 					ResetSP.apply();
-
 					FocusAbsPosNP.setState(IPS_BUSY);
 					FocusMaxPosNP.setState(IPS_BUSY);
 					FocusSpeedNP.setState(IPS_BUSY);
 					FocusRelPosNP.setState(IPS_BUSY);
 					FocusMotionSP.setState(IPS_BUSY);
+                    SetPositionSP.setState(IPS_BUSY);
+                    BacklashNP.setState(IPS_BUSY);
 					FocusAbsPosNP.apply();
 					FocusMaxPosNP.apply();
 					FocusSpeedNP.apply();
 					FocusRelPosNP.apply();
 					FocusMotionSP.apply();
+                    SetPositionSP.apply();
+                    BacklashNP.apply();
 
 					if( FocuserFaultLP.getState() != IPS_ALERT )
 					{
@@ -253,22 +263,28 @@ bool RegulusFocuser::ISNewSwitch(const char *dev, const char *name, ISState *sta
 						FocuserFaultLP.apply();
 						SendCommand(CMDINIT);
 					}
-//					else
-//					{
-//						ResetSP.setState(IPS_ALERT);
-//						ResetSP.apply();
-//						LOG_ERROR("Can not reset. Device is in fault state.");
-//						return false;
-//					}
                     break;
                 default:
                     LOG_ERROR("Reset unknown status.");
                     FocusMotionSP.setState(IPS_ALERT);
                     FocusMotionSP.apply();
             }
-//            ResetSP.setState(IPS_OK);
-//            ResetSP.apply();
             return true;
+        }
+        
+        if (strcmp(SetPositionSP.getName(), name) == 0)
+        {
+   			SetPositionSP.update(states, names, n);
+            int setPositionIndex = SetPositionSP.findOnSwitchIndex();
+            switch(setPositionIndex)
+            {
+                case 0:
+					SendCommand(CMDSETPOSITION);
+                break;
+
+                default:
+                    LOG_ERROR("SetPosition unknown status.");
+            }
         }
     }
 
@@ -295,8 +311,10 @@ IPState RegulusFocuser::MoveAbsFocuser(uint32_t targetTicks)
         
 //    FocusAbsPosNP[0].value = targetTicks;
     targetTicks *= gearboxFactor;
-    modbus_f.registry_buffer[REGREQUESTEDPOSITIONLO]=targetTicks&65535;
-    modbus_f.registry_buffer[REGREQUESTEDPOSITIONHI]=targetTicks>>16;
+    modbus_f.registry_buffer[REGREQUESTEDPOSITIONLO] = targetTicks & 65535;
+    modbus_f.registry_buffer[REGREQUESTEDPOSITIONHI] = targetTicks >> 16;
+    modbus_f.registry_buffer[REGFLASHPOSITIONLO] = targetTicks & 65535;
+    modbus_f.registry_buffer[REGFLASHPOSITIONHI] = targetTicks >> 16;
     SendCommand(CMDGOTOPOSITION);
     return IPS_OK;
 }
@@ -321,8 +339,10 @@ IPState RegulusFocuser::MoveRelFocuser(FocusDirection dir, uint32_t ticks)
 
 	ticks *= gearboxFactor;
 
-    modbus_f.registry_buffer[REGREQUESTEDPOSITIONLO]=ticks&65535;
-    modbus_f.registry_buffer[REGREQUESTEDPOSITIONHI]=ticks>>16;
+    modbus_f.registry_buffer[REGREQUESTEDPOSITIONLO] = ticks & 65535;
+    modbus_f.registry_buffer[REGREQUESTEDPOSITIONHI] = ticks >> 16;
+    modbus_f.registry_buffer[REGFLASHPOSITIONLO] = ticks & 65535;
+    modbus_f.registry_buffer[REGFLASHPOSITIONHI] = ticks >> 16;
     SendCommand(CMDGOTORELATIVE);
     return IPS_OK;
 }
@@ -374,6 +394,7 @@ void RegulusFocuser::UpdateValues()
     FocusAbsPosNP[0].max = FocusMaxPosNP[0].value;
 	FocusSpeedNP[0].value = modbus_f.registry_buffer[REGFOCUSERSPEED];
 	FocusRelPosNP[0].value = 0;
+    BacklashNP[0].value = (modbus_f.registry_buffer[REGBACKLASHLO]+modbus_f.registry_buffer[REGBACKLASHHI]*65536) / gearboxFactor;
 
     if( (modbus_f.registry_buffer[REGDIRECTION] == 1) && (FocusMotionSP[FOCUS_INWARD].s == ISS_ON) )
     {
@@ -413,6 +434,8 @@ void RegulusFocuser::UpdateValues()
         FocusSpeedNP.setState(IPS_ALERT);
         FocusRelPosNP.setState(IPS_ALERT);
         FocusMotionSP.setState(IPS_ALERT);
+        BacklashNP.setState(IPS_ALERT);
+        SetPositionSP.setState(IPS_ALERT);
     }
     if( (modbus_f.registry_buffer[REGFAULT] == 0) && (FocuserFaultLP[0].getState() != IPS_OK) )
     {
@@ -426,6 +449,8 @@ void RegulusFocuser::UpdateValues()
         FocusSpeedNP.setState(IPS_OK);
         FocusRelPosNP.setState(IPS_OK);
         FocusMotionSP.setState(IPS_OK);
+        BacklashNP.setState(IPS_OK);
+        SetPositionSP.setState(IPS_OK);
     }
 
     FocusAbsPosNP.apply();
@@ -436,6 +461,9 @@ void RegulusFocuser::UpdateValues()
     FocuserFaultLP.apply();
     ResetSP.apply();
     RemoteControlSP.apply();
+    BacklashNP.apply();
+    SetPositionSP.apply();
+
 }
 
 void RegulusFocuser::SendCommand(int myCommand)
@@ -446,11 +474,12 @@ void RegulusFocuser::SendCommand(int myCommand)
     printf("\n\n\nInvalid command: %d\n\n\n", myCommand);
     return;
   }
+  else
   {
     usleep(MODBUSDELAY);
-    modbus_f.registry_buffer[REGCOMMANDFROMPI]=myCommand;
+    modbus_f.registry_buffer[REGCOMMANDFROMDRIVER]=myCommand;
     usleep(MODBUSDELAY);
-    modbus_f.WriteRegisters(0,4,0);
+    modbus_f.WriteRegisters(0,6,0);
   }
   while(! CheckCommand(myCommand));
 }
@@ -459,10 +488,10 @@ int RegulusFocuser::CheckCommand(int myCommand)
 {
   {
     usleep(MODBUSDELAY);
-    modbus_f.ReadRegisters(REGRESPONSETOPI,1,REGRESPONSETOPI);
-    if(modbus_f.registry_buffer[REGRESPONSETOPI] == myCommand)
+    modbus_f.ReadRegisters(REGRESPONSETODRIVER,1,REGRESPONSETODRIVER);
+    if(modbus_f.registry_buffer[REGRESPONSETODRIVER] == myCommand)
     {
-      modbus_f.WriteRegister(REGRESPONSETOPI, 0);
+      modbus_f.WriteRegister(REGRESPONSETODRIVER, 0);
       return 1;
     }
     else
@@ -473,4 +502,9 @@ int RegulusFocuser::CheckCommand(int myCommand)
     }
   }
   return 0;
+}
+
+void RegulusFocuser::SetBacklashInFirmware()
+{
+    SendCommand(CMDSETPOSITION);
 }

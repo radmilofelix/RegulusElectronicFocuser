@@ -1,6 +1,5 @@
 #include "FocuserStepper.h"
 
-
 FocuserStepper::FocuserStepper()
 {
 	motorDirection = -1;
@@ -55,11 +54,13 @@ FocuserStepper::~FocuserStepper()
 	
 }
 
-int FocuserStepper::ToneStep (unsigned long numberOfSteps, int motionDirection, unsigned long frequency)
+int FocuserStepper::ToneStep (uint32_t numberOfSteps, int motionDirection, uint32_t frequency)
 {
   if(!motorEnable)
   {
+    #ifdef FOCUSERDEBUG
     Serial2.println("Motion disabled!");
+    #endif
     return 0;
   }
   if(motorDirection != motionDirection)
@@ -72,10 +73,12 @@ int FocuserStepper::ToneStep (unsigned long numberOfSteps, int motionDirection, 
     requestedPosition = stepPosition + numberOfSteps;
   if( ( ( requestedPosition < 0) && motionDirection < 0) || (( requestedPosition > maxSteps) && motionDirection > 0) )
   {
+    #ifdef FOCUSERDEBUG
     Serial2.println("Tone pulse: position out of range!");
+    #endif
     return 0;
   }
-  unsigned long duration=1000*(unsigned long)numberOfSteps/(unsigned long)frequency;
+  uint32_t duration=1000*(uint32_t)numberOfSteps/(uint32_t)frequency;
   if (numberOfSteps != 0)
     tone(STEP,(unsigned int)frequency,duration);
   else
@@ -84,11 +87,13 @@ int FocuserStepper::ToneStep (unsigned long numberOfSteps, int motionDirection, 
   return 1;
 }
 
-int FocuserStepper::PulseStep (unsigned long numberOfSteps, int motionDirection, int duration)
+int FocuserStepper::PulseStep (uint32_t numberOfSteps, int motionDirection, int duration)
 {
   if(!motorEnable)
   {
+    #ifdef FOCUSERDEBUG
     Serial2.println("Motion disabled!");
+    #endif
     return 0;
   }
   delay(10);
@@ -105,11 +110,13 @@ int FocuserStepper::PulseStep (unsigned long numberOfSteps, int motionDirection,
   return 1;
 }
 
-void FocuserStepper::RelativePulseStepToTarget(unsigned long relativeSteps)
+void FocuserStepper::RelativePulseStepToTarget(uint32_t relativeSteps)
 {
   if(!motorEnable)
   {
+    #ifdef FOCUSERDEBUG
     Serial2.println("Motion disabled!");
+    #endif
     return;
   }
   delay(10);
@@ -143,23 +150,32 @@ void FocuserStepper::PulseStepToTarget()
 {
   if(!motorEnable)
   {
-    Serial2.println("Motion disabled!");
     return;
   }
   delay(10);
-
+  if(stepTarget > maxSteps)
+  {
+    stepTarget = maxSteps;
+  }
+  if(stepTarget < 0)
+  {
+    stepTarget = 0;
+  }
   while( (stepPosition != stepTarget) && (stepPosition >= 0) && (stepPosition <= maxSteps) )
   {
     if( (stepTarget > stepPosition) && motorDirection < 0)
       SetMotorDirection(1);
     if( (stepTarget < stepPosition) && motorDirection > 0)
       SetMotorDirection(-1);
+
     stepPosition += motorDirection;
+
     if(stepPosition < 0)
     {
       stepPosition = 0;
       return;
     }
+
     digitalWrite(STEP, HIGH);
     delayMicroseconds(halfCycleDuration);
     digitalWrite(STEP, LOW); 
@@ -369,7 +385,9 @@ void FocuserStepper::ValidateMicrostepMode()
 {
   if(microstepping<1)
   {
+    #ifdef FOCUSERDEBUG
     Serial2.println(F(" Microstep value can not be negative! Microstep mode will be set to full step."));
+    #endif
     microstepping=1;
   }
   switch(motorDriver)
@@ -377,25 +395,33 @@ void FocuserStepper::ValidateMicrostepMode()
     case DRIVERSTSPIN820:
     if(microstepping==64)
     {
-      Serial2.println(F(" Wrong microstepping option for STSPIN820 driver! Microstep mode will be set to 1/32 step."));
-      microstepping=32;
+        #ifdef FOCUSERDEBUG
+        Serial2.println(F(" Wrong microstepping option for STSPIN820 driver! Microstep mode will be set to 1/32 step."));
+        #endif
+        microstepping=32;
     }
     break;
     case DRIVERDRV8825:
     if(microstepping>32)
     {
-      Serial2.println(F(" Wrong microstepping option for STSPIN820 driver!Microstep mode will be set to 1/32 step."));
-      microstepping=32;
+        #ifdef FOCUSERDEBUG
+        Serial2.println(F(" Wrong microstepping option for STSPIN820 driver!Microstep mode will be set to 1/32 step."));
+        #endif
+        microstepping=32;
     }
     break;
     case DRIVERA4988:
     if(microstepping>16)
     {
-      Serial2.println(F(" Wrong microstepping option for STSPIN820 driver!Microstep mode will be set to 1/16 step."));
-      microstepping=16;
+        #ifdef FOCUSERDEBUG
+        Serial2.println(F(" Wrong microstepping option for STSPIN820 driver!Microstep mode will be set to 1/16 step."));
+        #endif
+        microstepping=16;
     }
     break;
   }
+
+  #ifdef FOCUSERDEBUG
   switch(microstepping)
   {
     case 1:
@@ -430,6 +456,7 @@ void FocuserStepper::ValidateMicrostepMode()
       microstepping=1;
     break;
   }
+  #endif
 }
 
 void FocuserStepper::EnableMotor(bool value)
@@ -550,7 +577,7 @@ void FocuserStepper::SetFocuserSpeed(int index)
   speedIndex = index;
 }
 
-void FocuserStepper::CorrelateSpeed(unsigned long numberOfSteps)
+void FocuserStepper::CorrelateSpeed(uint32_t numberOfSteps)
 {
   if(numberOfSteps > maxSteps/8)
     {
@@ -558,7 +585,7 @@ void FocuserStepper::CorrelateSpeed(unsigned long numberOfSteps)
       SetFocuserSpeed(speedIndex);
       return;
     }
-    unsigned long stepTreshold =  maxSteps / 32;
+    uint32_t stepTreshold =  maxSteps / 32;
     for(int i=0; i<10; i++)
     {
       if(numberOfSteps > stepTreshold)

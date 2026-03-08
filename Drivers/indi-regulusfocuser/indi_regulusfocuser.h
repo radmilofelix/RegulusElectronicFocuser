@@ -37,6 +37,7 @@
 #define TIMERHIT_VALUE 1000 // milliseconds
 #define MODBUSDELAY	20000 // milliseconds
 
+	
 //#define HASGEARBOX
 #ifdef HASGEARBOX
 #define GEARBOXDEMULTIPLIER 100
@@ -52,8 +53,9 @@ class RegulusFocuser : public INDI::Focuser
         virtual bool ISNewNumber(const char *dev, const char *name, double values[], char *names[], int n) override;
         virtual bool ISNewSwitch(const char *dev, const char *name, ISState *states, char *names[], int n) override;
         ModbusMaster modbus_f;
-	void SendCommand(int myCommand);
-	int CheckCommand(int myCommand);
+        void SendCommand(int myCommand);
+        int CheckCommand(int myCommand);
+        void SetBacklashInFirmware();
 
     protected:
         bool initProperties() override;
@@ -82,5 +84,7 @@ class RegulusFocuser : public INDI::Focuser
 
 	INDI::PropertyLight FocuserFaultLP {1};
 	INDI::PropertySwitch ResetSP {1};
+    INDI::PropertySwitch SetPositionSP {1};
 	INDI::PropertySwitch RemoteControlSP {2};
+    INDI::PropertyNumber BacklashNP {1};
 };

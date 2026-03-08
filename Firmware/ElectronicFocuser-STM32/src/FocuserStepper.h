@@ -9,6 +9,8 @@
 // Total steps (1/256 microstepping): 138240
 // Travel per step (1/256 microstepping): 126.953125nm
 
+//#define FOCUSERDEBUG
+
 #define EN  PB4     
 #define M1  PB6 // A4988 MS1; DRV8825 M0; STSPIN220 MODE1; STSPIN820 M1       
 #define M2  PB7 // A4988 MS2; DRV8825 M1; STSPIN220 MODE2; STSPIN820 M2 
@@ -17,6 +19,7 @@
 #define STEP  PB1
 #define DIR  PB3
 #define RESET PB5
+#define TX2PIN PA2
 
 #define DRIVERA4988 1
 #define DRIVERDRV8825 2
@@ -29,9 +32,9 @@
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////  Enable one of the focuser models
-#define SCT_MCT
+//#define SCT_MCT
 //#define PHOTON_254
-//#define RACK_PINION_LO_PROFILE
+#define RACK_PINION_LO_PROFILE
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #ifdef SCT_MCT
@@ -79,22 +82,22 @@ class FocuserStepper
     public:
     FocuserStepper();
     ~FocuserStepper();
-	int PulseStep (unsigned long numberOfSteps, int motionDirection, int duration);
+	int PulseStep (uint32_t numberOfSteps, int motionDirection, int duration);
 	void PulseStepToTarget ();
-	void RelativePulseStepToTarget(unsigned long relativeSteps);
-	int ToneStep (unsigned long numberOfSteps, int motionDirection, unsigned long frequency);
+	void RelativePulseStepToTarget(uint32_t relativeSteps);
+	int ToneStep (uint32_t numberOfSteps, int motionDirection, uint32_t frequency);
 	void SelectMicrostepMode(int microstep);
 	void ValidateMicrostepMode();
 	void EnableMotor(bool value);
 	void SetMotorDirection(int direction);
 	void SetFocuserSpeed(int index);
-	void CorrelateSpeed(unsigned long numberOfSteps);
+	void CorrelateSpeed(uint32_t numberOfSteps);
 	
 	int motorDirection; // -1 = retract; 1 = extend
 	int coilConfiguration; // 1 = normal; 2 = reversed
 	bool motorEnable;
-	unsigned long steps;
-	unsigned long freq;
+	uint32_t steps;
+	uint32_t freq;
 	int halfCycleDuration; // step half cycle duration in microseconds
 	int microstepping;
 	int ms1;
@@ -110,8 +113,8 @@ class FocuserStepper
 	long stepRate; // number of step per encoder tick
     bool gearedType;
     int backlash;
-	unsigned long maxSteps; // maximal number of steps in use
-	unsigned long maxStepsAbsolute; // maximum steps calculated from FOCUSERTRAVEL, FOCUSERTRAVELPER360, MOTORRESOLUTION, MAXMICROSTEPPING and GEARRATIO values
+	uint32_t maxSteps; // maximal number of steps in use
+	uint32_t maxStepsAbsolute; // maximum steps calculated from FOCUSERTRAVEL, FOCUSERTRAVELPER360, MOTORRESOLUTION, MAXMICROSTEPPING and GEARRATIO values
 };
 
 #endif
