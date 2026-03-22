@@ -479,7 +479,7 @@ void RegulusFocuser::SendCommand(int myCommand)
     usleep(MODBUSDELAY);
     modbus_f.registry_buffer[REGCOMMANDFROMDRIVER]=myCommand;
     usleep(MODBUSDELAY);
-    modbus_f.WriteRegisters(0,6,0);
+    modbus_f.WriteRegisters(0,7,0);
   }
   while(! CheckCommand(myCommand));
 }
